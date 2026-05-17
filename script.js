@@ -1,0 +1,1531 @@
+// Khởi tạo Supabase Client
+const supabaseUrl = 'https://moahaaubepvvpkukjoun.supabase.co';
+// WARNING: Điền Anon Key vào thay cho process.env.SUPABASE_KEY vì file HTML chạy trên trình duyệt client
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1vYWhhYXViZXB2dnBrdWtqb3VuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjk2NTksImV4cCI6MjA5MTkwNTY1OX0.AgY0-QhMeTXF08eCBRnIxyAjq8mtNHYQBDr6F5jqPcQ';
+
+let supabase = null;
+try {
+    if (window.supabase) {
+        supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+        console.log('✅ Supabase initialized successfully!');
+    } else {
+        console.error('❌ Thư viện Supabase chưa được tải xuống tại window.supabase!');
+        alert("⚠️ Không thể tải được thư viện Supabase! Vui lòng tải lại trang hoặc kiểm tra kết nối mạng.");
+    }
+} catch (err) {
+    console.error('❌ Lỗi khởi tạo Supabase:', err);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 1 — SUPABASE & MOCK DATABASE (Tạm thời)
+//
+//  Đang trong quá trình chuyển đổi sang Supabase thực.
+//  Dữ liệu Mock DB tạm giữ lại để tránh break UI trong lúc refactor.
+//
+//  Cấu trúc DB:
+//  ┌──────────────────────────────────────────────────────────────┐
+//  │ DB.accounts  : object key-value, key = mã truy cập (string) │
+//  │   {code, name, role, rawRole, major, lop, is_active}        │
+//  │ DB.students  : mảng object sinh viên                         │
+//  │   {id, mssv, ho_ten, lop, status, updated_at}               │
+//  │ DB.feedbacks : mảng object phản hồi                          │
+//  │   {id, student_id, role, author_name, author_code,          │
+//  │    content, reactions[], parent_id, created_at}             │
+//  │ DB.nextStudentId / DB.nextFeedbackId : auto-increment id    │
+//  └──────────────────────────────────────────────────────────────┘
+//
+//  Helper functions tạo timestamp tương đối:
+//  – daysAgo(n)  : n ngày trước từ hiện tại
+//  – hoursAgo(n) : n giờ trước từ hiện tại
+//  – minsAgo(n)  : n phút trước từ hiện tại
+// ══════════════════════════════════════════════════════════════════
+// [ĐÃ XÓA MOCK DATABASE] - App đang chuyển sang dùng Supabase.
+// Các đoạn code dưới dùng DB.* sẽ được viết lại trong các bước tiếp theo.
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 2 — APP STATE (Trạng thái toàn cục ứng dụng)
+//
+//  State lưu các giá trị tạm thời trong session hiện tại.
+//  Mỗi lần logout → State.reset() dọn toàn bộ về mặc định.
+//
+//  Các trường:
+//  – user            : thông tin người đang đăng nhập (null = chưa đăng nhập)
+//  – statusFilter    : bộ lọc trạng thái đang chọn ('all'|'green'|'yellow'|'red'|'attention')
+//  – currentStudentId: ID sinh viên đang mở trong modal
+//  – replyParentId   : ID feedback đang reply (null = gửi bình luận gốc)
+//  – pendingContent  : nội dung feedback đang chờ xác nhận lớp (class prompt)
+//  – foundStudentId  : ID sinh viên được tìm thấy trong modal Add Student
+//  – charts          : object chứa các Chart.js instance (để destroy khi cần vẽ lại)
+// ══════════════════════════════════════════════════════════════════
+const State = {
+    user: null,
+    statusFilter: 'all',
+    currentStudentId: null,
+    replyParentId: null,
+    pendingContent: null,   // nội dung chờ xác nhận lớp
+    foundStudentId: null,   // cho flow "tìm thấy SV" trong modal Add Student
+    charts: {},
+    students: [],           // Cache danh sách sinh viên lấy từ db
+    rosterSelected: null,   // SV đã chọn từ roster autocomplete (cho modal Thêm SV)
+
+
+    // Dọn dẹp toàn bộ state về giá trị ban đầu
+    reset() {
+        this.user = null; this.statusFilter = 'all';
+        this.currentStudentId = null; this.replyParentId = null;
+        this.pendingContent = null; this.foundStudentId = null;
+        this.rosterSelected = null;
+        // Hủy tất cả Chart.js instance để tránh memory leak
+        Object.values(this.charts).forEach(c => c && c.destroy && c.destroy());
+        this.charts = {};
+    }
+};
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 3 — AUTH MODULE (Xác thực người dùng)
+//
+//  Luồng đăng nhập đơn giản (không có server):
+//  1. Đọc mã từ input → tìm trong DB.accounts
+//  2. Kiểm tra is_active
+//  3. Lưu vào State.user
+//  4. Ẩn loginScreen, hiện mainApp
+//  5. Cập nhật UI (tên, role, tab Admin nếu là Admin)
+//
+//  quickLogin(code): điền mã vào input rồi gọi login() ngay
+//  logout():         reset State, trở về màn hình đăng nhập
+// ══════════════════════════════════════════════════════════════════
+async function quickLogin(code) { document.getElementById('accessCode').value = code; await login(); }
+
+let rawAccessCode = "";
+let maskTimeout = null;
+
+// Hàm xử lý việc hiển thị từng ký tự mật khẩu một lát rồi mới ẩn đi
+function handleAccessCodeInput(event) {
+    const input = event.target;
+    const value = input.value;
+    
+    if (value === "") {
+        rawAccessCode = "";
+        input.value = "";
+        return;
+    }
+
+    if (!value.includes('•')) {
+        rawAccessCode = value;
+    } else {
+        if (value.length > rawAccessCode.length) {
+            const addedChar = value.slice(-1);
+            rawAccessCode = rawAccessCode.slice(0, value.length - 1) + addedChar;
+        } else if (value.length < rawAccessCode.length) {
+            rawAccessCode = rawAccessCode.slice(0, value.length);
+        }
+    }
+
+    let masked = "";
+    for (let i = 0; i < rawAccessCode.length; i++) {
+        if (i === rawAccessCode.length - 1) {
+            masked += rawAccessCode[i];
+        } else {
+            masked += "•";
+        }
+    }
+    input.value = masked;
+    
+    if (maskTimeout) clearTimeout(maskTimeout);
+    
+    maskTimeout = setTimeout(() => {
+        let allMasked = "";
+        for (let i = 0; i < rawAccessCode.length; i++) {
+            allMasked += "•";
+        }
+        input.value = allMasked;
+    }, 500);
+}
+
+async function login() {
+    const inputField = document.getElementById('accessCode');
+    const code = (inputField.value.includes('•') ? rawAccessCode : inputField.value).trim();
+    if (!code) return; // Nếu trống thì bỏ qua
+
+    // Vô hiệu hóa nút và hiện trạng thái loading thay đổi text
+    const btn = document.querySelector('#loginScreen button');
+    const oldText = btn.innerText;
+    btn.innerText = '⏳ Đang kiểm tra...';
+    btn.disabled = true;
+
+    if (!supabase) { alert('❌ Không kết nối được Supabase!'); return; }
+
+    // Truy vấn dữ liệu tài khoản từ Supabase (bảng accounts)
+    const { data: acc, error } = await supabase
+        .from('accounts')
+        .select('*')
+        .eq('code', code)
+        .single(); // Lấy đúng 1 dòng vì 'code' là Primary Key
+
+    btn.innerText = oldText;
+    btn.disabled = false;
+
+    if (error || !acc) {
+        console.error("Login lỗi:", error);
+        alert('❌ Mã truy cập không hợp lệ!');
+        return;
+    }
+    if (!acc.is_active) { alert('❌ Tài khoản đã bị vô hiệu hóa!'); return; }
+
+    // Lưu thông tin user đăng nhập vào State
+    // Chuyển đổi tên trường raw_role (DB) thành rawRole (Client) cho khớp các lệnh if-else cũ
+    State.user = {
+        code: acc.code,
+        name: acc.name,
+        role: acc.role,
+        rawRole: acc.raw_role,
+        major: acc.major
+    };
+
+    // Chuyển UI từ màn hình đăng nhập sang ứng dụng chính
+    document.getElementById('loginScreen').classList.add('hidden');
+    document.getElementById('mainApp').classList.remove('hidden');
+    document.getElementById('headerName').textContent = State.user.name;
+    // Hiện role + bộ môn bên cạnh nếu là GV hoặc CNBM (vd: "Giảng viên · IT")
+    const majorLabel = ['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major
+        ? ` · ${State.user.major}` : '';
+    document.getElementById('headerRole').textContent = State.user.role + majorLabel;
+
+    // Chỉ Admin mới thấy tab "Admin"
+    if (State.user.rawRole === 'Admin')
+        document.getElementById('tabAdmin').classList.remove('hidden');
+
+    // Hiển thị bộ lọc Bộ môn nếu là Admin hoặc CTSV
+    if (['Admin', 'CTSV'].includes(State.user.rawRole)) {
+        const mf = document.getElementById('majorFilter');
+        if (mf) mf.classList.remove('hidden');
+    }
+
+    // Nút đổi trạng thái trong modal chỉ hiện với GV / CTSV / CNBM
+    if (['GV', 'CTSV', 'CNBM'].includes(State.user.rawRole))
+        document.getElementById('statusBtns').style.display = 'flex';
+    else
+        document.getElementById('statusBtns').style.display = 'none';
+
+    initDashboard();
+
+    // Hiện badge thông báo (mock: luôn = 2 sau đăng nhập)
+    document.getElementById('notifBadge').classList.remove('hidden');
+}
+
+function logout() {
+    State.reset();
+    document.getElementById('loginScreen').classList.remove('hidden');
+    document.getElementById('mainApp').classList.add('hidden');
+    document.getElementById('accessCode').value = '';
+    document.getElementById('tabAdmin').classList.add('hidden');
+    switchTab('dashboard', true); // silent=true: không gọi renderAnalytics/renderAdmin
+    document.getElementById('notifBadge').classList.add('hidden');
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 4 — STUDENT MODULE (Quản lý danh sách sinh viên)
+//
+//  initDashboard()       : khởi tạo dashboard sau đăng nhập
+//  updateStats()         : cập nhật 4 thẻ thống kê số lượng
+//  populateClassFilter() : build dropdown lớp học từ DB.students
+//  filterByStatus(s)     : lọc + highlight thẻ thống kê
+//  renderStudents()      : lọc + sắp xếp + render danh sách SV
+//  studentCard(s)        : tạo HTML cho 1 thẻ sinh viên
+// ══════════════════════════════════════════════════════════════════
+async function initDashboard() {
+    const listEl = document.getElementById('studentList');
+    if (listEl) listEl.innerHTML = '<div class="text-center text-slate-400 py-16 text-sm">⏳ Đang tải dữ liệu từ Supabase...</div>';
+
+    // Kéo dữ liệu từ 3 bảng: students + (student_classes + feedbacks)
+    const { data: stData, error } = await supabase
+        .from('students')
+        .select(`
+            *,
+            student_classes(class_name, author_code),
+            feedbacks(content, created_at)
+        `)
+        .order('updated_at', { ascending: false });
+
+    if (error) {
+        console.error("Lỗi khi load danh sách sinh viên:", error);
+        if (listEl) listEl.innerHTML = '<div class="text-center text-rose-500 py-16 text-sm">❌ Lỗi tốc độ mạng hoặc Database.</div>';
+        return;
+    }
+
+    // Load roster trước để lấy thông tin ngành
+    await loadRoster();
+
+    // Tiền xử lý dữ liệu để các bộ lọc UI cũ vẫn chạy đúng
+    let processedStudents = (stData || []).map(s => {
+        // Tìm tất cả các record của sinh viên này trong rosterCache (không phân biệt hoa thường)
+        const rosterEntries = rosterCache ? rosterCache.filter(r => r.mssv.toLowerCase() === s.mssv.toLowerCase()) : [];
+        const nganh = rosterEntries.length > 0 ? rosterEntries[0].nganh : 'Khác';
+
+        let classSet = new Set();
+        let monSet = new Set();
+        let gvSet = new Set();
+        rosterEntries.forEach(r => { 
+            if (r.lop) classSet.add(r.lop); 
+            if (r.ma_mon) monSet.add(r.ma_mon); 
+            if (r.giang_vien) gvSet.add(r.giang_vien);
+        });
+        (s.student_classes || []).forEach(c => { if (c.class_name) classSet.add(c.class_name); });
+        
+        const classStr = Array.from(classSet).join(', ');
+        const monStr = Array.from(monSet).join(', ');
+        const gvStr = Array.from(gvSet).join(', ');
+
+        // Lấy feedback gần nhất làm preview
+        const fbs = (s.feedbacks || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        return {
+            ...s,
+            lop: classStr,
+            ma_mon: monStr,
+            giang_vien: gvStr,
+            nganh: nganh,
+            latestFbContent: fbs[0] ? fbs[0].content : null,
+            latestFbCreatedAt: fbs[0] ? fbs[0].created_at : null
+        };
+    });
+
+    // Lọc sinh viên theo ngành (nếu user là GV/CNBM và có cấu hình ngành)
+    if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
+        processedStudents = processedStudents.filter(s => s.nganh === State.user.major);
+    }
+
+    State.students = processedStudents;
+
+    updateStats();
+    populateClassFilter();
+    populateMajorFilter();
+    renderStudents();
+}
+
+// Đếm số SV theo từng trạng thái và cập nhật vào 4 thẻ stat
+function updateStats() {
+    const all = State.students;
+    document.getElementById('cntTotal').textContent = all.length;
+    document.getElementById('cntGreen').textContent = all.filter(s => (s.status || 'green') === 'green').length;
+    document.getElementById('cntYellow').textContent = all.filter(s => s.status === 'yellow').length;
+    document.getElementById('cntRed').textContent = all.filter(s => s.status === 'red').length;
+}
+
+// Lấy tất cả tên lớp từ DB.students (SV có thể thuộc nhiều lớp),
+// dùng Set để loại trùng, sort A-Z rồi đưa vào <select>
+function populateClassFilter() {
+    const set = new Set();
+    State.students.forEach(s => (s.lop || '').split(',')
+        .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+        .forEach(c => set.add(c)));
+
+    const sel = document.getElementById('classFilter');
+    const cur = sel.value; // giữ lại giá trị đang chọn
+    sel.innerHTML = '<option value="all">🏫 Tất cả lớp</option>';
+    [...set].sort().forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
+    if (cur !== 'all') sel.value = cur; // restore selection
+}
+
+// Tạo cấu trúc tương tự populateClassFilter để lọc bộ môn (IT, MK, BA...)
+function populateMajorFilter() {
+    const set = new Set();
+    State.students.forEach(s => (s.lop || '').split(',')
+        .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+        .forEach(c => {
+            const match = c.match(/^[a-zA-Z]+/);
+            if (match) set.add(match[0].toUpperCase());
+        }));
+
+    const sel = document.getElementById('majorFilter');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="all">📚 Tất cả bộ môn</option>';
+    [...set].sort().forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+    if (cur !== 'all') sel.value = cur;
+}
+
+// Lọc theo trạng thái + highlight thẻ stat tương ứng bằng ring
+function filterByStatus(s) {
+    State.statusFilter = s;
+    // Xóa highlight cũ khỏi tất cả thẻ
+    ['statAll', 'statGreen', 'statYellow', 'statRed'].forEach(id =>
+        document.getElementById(id).classList.remove('ring-2', 'ring-indigo-400', 'ring-emerald-400', 'ring-amber-400', 'ring-rose-400', 'shadow-md'));
+    // Thêm highlight cho thẻ đang chọn
+    const map = { all: ['statAll', 'ring-indigo-400'], green: ['statGreen', 'ring-emerald-400'], yellow: ['statYellow', 'ring-amber-400'], red: ['statRed', 'ring-rose-400'] };
+    if (map[s]) document.getElementById(map[s][0]).classList.add('ring-2', map[s][1], 'shadow-md');
+    renderStudents();
+}
+
+// Render danh sách SV với đầy đủ bộ lọc:
+// 1. Sort: red → yellow → green, cùng status thì mới nhất lên đầu
+// 2. Filter theo statusFilter (all / attention / green / yellow / red)
+// 3. Filter theo lớp học (classFilter dropdown)
+// 4. Filter theo từ khóa tìm kiếm (MSSV hoặc họ tên, case-insensitive)
+function renderStudents() {
+    const container = document.getElementById('studentList');
+    const search = document.getElementById('searchInput').value.toLowerCase();
+    const classF = document.getElementById('classFilter').value;
+    const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
+
+    // Sort theo mức độ nghiêm trọng (red = 0 → cần chú ý nhất)
+    let list = [...State.students].sort((a, b) => {
+        const o = { red: 0, yellow: 1, green: 2 };
+        const d = (o[a.status || 'green']) - (o[b.status || 'green']);
+        return d !== 0 ? d : new Date(b.updated_at) - new Date(a.updated_at);
+    });
+
+    // BẢO MẬT: Giảng viên chỉ được xem sinh viên thuộc lớp mình dạy (dựa vào roster giang_vien)
+    if (State.user.role === 'GV') {
+        const ucode = State.user.code.toLowerCase();
+        const uname = State.user.name.toLowerCase();
+        list = list.filter(s => {
+            if (!s.giang_vien) return false;
+            const gvStr = s.giang_vien.toLowerCase();
+            return gvStr.includes(ucode) || gvStr.includes(uname);
+        });
+    }
+
+    // Lọc theo bộ lọc trạng thái
+    if (State.statusFilter === 'attention') list = list.filter(s => s.status === 'yellow' || s.status === 'red');
+    else if (State.statusFilter !== 'all') list = list.filter(s => (s.status || 'green') === State.statusFilter);
+
+    // Lọc theo lớp (kiểm tra chuỗi lop phân tách bằng dấu phẩy)
+    if (classF !== 'all') list = list.filter(s =>
+        (s.lop || '').split(',').map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).includes(classF));
+
+    // Lọc theo bộ môn
+    if (majorF !== 'all') list = list.filter(s =>
+        (s.lop || '').split(',').some(c => c.trim().toUpperCase().startsWith(majorF)));
+
+    // Lọc theo từ khóa
+    if (search) list = list.filter(s =>
+        s.mssv.toLowerCase().includes(search) || s.ho_ten.toLowerCase().includes(search));
+
+    if (!list.length) {
+        container.innerHTML = '<div class="text-center text-slate-400 py-16 text-sm">Không tìm thấy sinh viên nào</div>';
+        return;
+    }
+    container.innerHTML = list.map(studentCard).join('');
+}
+
+// Tạo HTML string cho một thẻ sinh viên trong danh sách.
+// Bao gồm: dải màu status, MSSV, tên, badge "Mới" (nếu cập nhật trong 30 phút),
+// lớp học, preview phản hồi gần nhất, thời gian cập nhật.
+function studentCard(s) {
+    const st = s.status || 'green';
+    const strip = { green: 'strip-green', yellow: 'strip-yellow', red: 'strip-red' }[st];
+    const badge = { green: 'bg-emerald-100 text-emerald-700', yellow: 'bg-amber-100 text-amber-700', red: 'bg-rose-100 text-rose-700' }[st];
+    const label = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[st];
+    const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[st];
+
+    // Badge "Mới" xuất hiện nếu updated_at trong vòng 30 phút
+    const recent = (Date.now() - new Date(s.updated_at)) < 30 * 60 * 1000;
+
+    // Lấy feedback gần nhất để preview từ trường đã map sẵn ở initDashboard
+    const latestFbText = s.latestFbContent;
+    const preview = latestFbText ? (latestFbText.length > 70 ? latestFbText.slice(0, 70) + '…' : latestFbText) : 'Chưa có phản hồi';
+
+    return `
+    <div onclick="openStudentModal(${s.id})"
+        class="bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group">
+        <!-- Dải màu trạng thái bên trái -->
+        <div class="${strip} w-1.5 shrink-0"></div>
+        <div class="flex-1 p-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 min-w-0">
+            <!-- MSSV -->
+            <div class="sm:w-24 shrink-0">
+                <p class="font-mono text-xs font-bold text-slate-400">${s.mssv}</p>
+            </div>
+            <!-- Tên + Badge "Mới" + Lớp + Chi tiết -->
+            <div class="sm:w-56 shrink-0 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <p class="font-bold text-slate-800 group-hover:text-indigo-600 transition text-sm">${s.ho_ten}</p>
+                    ${recent ? '<span class="badge-new">Mới</span>' : ''}
+                </div>
+                <p class="text-xs text-slate-400 mt-0.5 truncate">🏫 ${s.lop || 'N/A'}${s.ma_mon ? `<span class="hidden sm:inline"> · 📚 ${s.ma_mon}</span>` : ''}${s.giang_vien ? `<span class="hidden sm:inline"> · 👨‍🏫 ${s.giang_vien}</span>` : ''}</p>
+            </div>
+            <!-- Preview feedback (ẩn trên mobile) -->
+            <div class="flex-1 min-w-0 hidden sm:block">
+                <p class="text-xs text-slate-500 truncate">💬 ${preview}</p>
+                ${s.latestFbCreatedAt ? `<p class="text-xs text-slate-300 mt-0.5">⏱️ ${timeAgo(s.latestFbCreatedAt)}</p>` : ''}
+            </div>
+            <!-- Badge trạng thái + thời gian cập nhật -->
+            <div class="flex items-center gap-2 shrink-0">
+                <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${badge}">${emoji} ${label}</span>
+                <span class="text-xs text-slate-300 hidden sm:inline">⏱️ ${timeAgo(s.updated_at)}</span>
+            </div>
+        </div>
+    </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 5 — STUDENT MODAL (Modal chi tiết sinh viên)
+//
+//  openStudentModal(id)  : mở modal, điền thông tin SV + render timeline
+//  closeStudentModal()   : đóng modal, reset state liên quan
+//  renderTimeline(id)    : render danh sách feedback theo cây (root + replies)
+//  fbCard(fb, isReply)   : tạo HTML cho 1 bubble feedback
+// ══════════════════════════════════════════════════════════════════
+async function openStudentModal(id) {
+    State.currentStudentId = id;
+    const s = State.students.find(x => x.id === id);
+    if (!s) return;
+
+    // Điền thông tin vào header modal
+    document.getElementById('modalName').textContent = s.ho_ten;
+    document.getElementById('modalMeta').textContent = `${s.mssv} · ${s.lop || 'N/A'} · ${{ green: '🟢 Ổn định', yellow: '🟡 Theo dõi', red: '🔴 Cảnh báo' }[s.status || 'green']}`;
+    // Dòng 2: chi tiết mã môn + GV (nhỏ hơn, không gây rối)
+    const detailParts = [];
+    if (s.ma_mon) detailParts.push(`📚 ${s.ma_mon}`);
+    if (s.giang_vien) detailParts.push(`👨‍🏫 ${s.giang_vien}`);
+    document.getElementById('modalDetail').textContent = detailParts.join(' · ');
+
+    await renderTimeline(id);
+    document.getElementById('studentModal').classList.add('active');
+    document.getElementById('feedbackInput').focus(); // focus input để gõ nhanh
+}
+
+function closeStudentModal() {
+    document.getElementById('studentModal').classList.remove('active');
+    document.getElementById('classPromptOverlay').classList.remove('active');
+    document.getElementById('feedbackInput').value = '';
+    cancelReply();
+    State.currentStudentId = null;
+    State.replyParentId = null;
+    State.pendingContent = null;
+}
+
+// Render timeline phản hồi dạng cây (Supabase):
+async function renderTimeline(studentId) {
+    const el = document.getElementById('feedbackTimeline');
+    el.innerHTML = '<p class="text-center text-slate-400 text-sm py-6">⏳ Đang tải phản hồi...</p>';
+
+    // Fetch feedbacks kèm theo thông tin role, major từ bảng accounts
+    const { data: allFbs, error } = await supabase
+        .from('feedbacks')
+        .select(`*, accounts(role, major)`)
+        .eq('student_id', studentId);
+
+    if (error || !allFbs || !allFbs.length) {
+        el.innerHTML = '<p class="text-center text-slate-400 text-sm py-6">Chưa có phản hồi nào</p>';
+        return;
+    }
+
+    // Tách roots (parent_id = null) và replies, sort thời gian
+    const roots = allFbs.filter(f => !f.parent_id)
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    el.innerHTML = roots.map(fb => {
+        const replies = allFbs.filter(r => r.parent_id === fb.id)
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        return fbCard(fb, false) +
+            (replies.length
+                ? `<div class="ml-7 pl-3 border-l-2 border-slate-200 space-y-2 mt-1.5">${replies.map(r => fbCard(r, true)).join('')}</div>`
+                : '');
+    }).join('');
+}
+
+// Tạo HTML bubble cho 1 feedback.
+// Màu nền phân biệt theo role:
+// – GV   → xanh dương (blue)
+// – CNBM → tím (purple)
+// – CTSV → xanh lá (emerald)
+//
+// Logic nút reaction (tim):
+// – Nếu là feedback của chính mình: chỉ hiện số react, không có nút
+// – Nếu là feedback người khác: nút toggle reaction, đổi icon ❤️/🤍
+function fbCard(fb, isReply) {
+    const isGV = fb.role === 'GV';
+    const isCNBM = fb.role === 'CNBM';
+    const bg = isGV ? 'bg-blue-50 border-blue-100' : isCNBM ? 'bg-purple-50 border-purple-100' : 'bg-emerald-50 border-emerald-100';
+    const nc = isGV ? 'text-blue-700' : isCNBM ? 'text-purple-700' : 'text-emerald-700';
+    const icon = isGV ? '👨‍🏫' : isCNBM ? '🎓' : '👤';
+    const t = new Date(fb.created_at).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+    const reacted = (fb.reactions || []).some(r => r.code === State.user.code); // user đã like chưa?
+    const isMyFb = fb.author_code === State.user.code;                        // đây là feedback của mình?
+    const rCount = (fb.reactions || []).length;
+
+    // Supabase trả về accounts là object: {role, major}
+    const acc = fb.accounts;
+    const roleLabel = acc
+        ? (acc.major ? `${acc.role} · ${acc.major}` : acc.role)
+        : fb.role; // fallback
+
+    return `
+    <div class="tl-item">
+        <div class="border ${bg} rounded-xl p-3 ${isReply ? 'text-sm' : ''}">
+            <div class="flex items-center justify-between mb-1.5">
+                <div>
+                    <span class="font-bold text-sm ${nc}">${icon} ${fb.author_name}</span>
+                    <span class="block text-[11px] ${nc} opacity-60 font-medium ml-[22px] -mt-0.5">${roleLabel}</span>
+                </div>
+                <span class="text-xs text-slate-400">${t}</span>
+            </div>
+            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${fb.content}</p>
+            <div class="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-white/60">
+                <!-- Nút "Trả lời" chỉ hiện ở feedback gốc, không hiện ở reply -->
+                ${!isReply ? `<button onclick="replyTo(${fb.id},'${fb.author_name}')" class="text-xs text-slate-400 hover:text-indigo-600 transition">↪️ Trả lời</button>` : ''}
+                <!-- Nút reaction: tất cả mọi người đều có quyền thả tim -->
+                <button onclick="toggleReaction(${fb.id})" class="reaction-btn ${reacted ? 'reacted' : ''}">
+                    <span>${reacted ? '❤️' : '🤍'}</span>
+                    ${rCount > 0 ? `<span class="font-semibold text-slate-500">${rCount}</span>` : ''}
+                </button>
+            </div>
+        </div>
+    </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 6 — FEEDBACK MODULE (Gửi phản hồi)
+//
+//  sendFeedback()     : validate → kiểm tra GV lần đầu → doSend hoặc classPrompt
+//  confirmClass()     : xác nhận lớp học, cập nhật SV, rồi gọi doSend
+//  skipClass()        : bỏ qua bước hỏi lớp, gọi doSend ngay
+//  doSend(content)    : thực sự push feedback vào DB, cập nhật UI
+//  replyTo(id, name)  : cài chế độ reply (hiện replyBar, set State.replyParentId)
+//  cancelReply()      : hủy chế độ reply
+//  toggleReaction(id) : toggle like/unlike cho 1 feedback
+// ══════════════════════════════════════════════════════════════════
+async function sendFeedback() {
+    const content = document.getElementById('feedbackInput').value.trim();
+    if (!content || !State.currentStudentId) return;
+
+    // Giảng viên tiếp theo không cần nhập lớp đang dạy nữa vì thông tin lớp đã hiện đầy đủ từ danh sách kỳ học.
+    await doSend(content);
+}
+
+// Xử lý khi GV xác nhận lớp trong popup:
+// – Parse chuỗi lop hiện tại, thêm lớp mới nếu chưa có
+// – Cập nhật modalMeta và dropdown classFilter
+// – Đóng overlay, gọi doSend với nội dung đang chờ
+async function confirmClass() {
+    const lop = document.getElementById('classPromptInput').value.trim();
+    if (lop && State.currentStudentId) {
+        // Lưu thông tin lớp vào Supabase
+        await supabase.from('student_classes').insert([{
+            student_id: State.currentStudentId,
+            author_code: State.user.code,
+            class_name: lop
+        }]);
+    }
+    document.getElementById('classPromptOverlay').classList.remove('active');
+    await doSend(State.pendingContent);
+    State.pendingContent = null;
+}
+
+// Bỏ qua bước hỏi lớp → gửi feedback ngay
+async function skipClass() {
+    document.getElementById('classPromptOverlay').classList.remove('active');
+    await doSend(State.pendingContent);
+    State.pendingContent = null;
+}
+
+// Thực sự tạo feedback object và push vào Supabase DB,
+// sau đó cập nhật updated_at của sinh viên và refresh toàn bộ UI liên quan.
+async function doSend(content) {
+    const btn = document.getElementById('btnSubmitFeedback');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+
+    // Tính timestamp hiện tại (Cập nhật updatedAt cho thẻ SV)
+    const nowISO = new Date().toISOString();
+
+    // 1. Insert Feedback
+    await supabase.from('feedbacks').insert([{
+        student_id: State.currentStudentId,
+        role: State.user.rawRole,
+        author_name: State.user.name,
+        author_code: State.user.code,
+        content: content,
+        parent_id: State.replyParentId || null
+    }]);
+
+    // 2. Cập nhật updated_at của SV để nó nhảy lên đầu danh sách dashboard
+    await supabase.from('students').update({ updated_at: nowISO }).eq('id', State.currentStudentId);
+
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+
+    document.getElementById('feedbackInput').value = '';
+    cancelReply();
+    await renderTimeline(State.currentStudentId); // fetch lại timeline từ DB
+    await initDashboard();                        // refresh data ds sinh viên ngầm
+}
+
+// Bật chế độ reply: lưu ID parent, hiện replyBar, đổi placeholder input
+function replyTo(id, name) {
+    State.replyParentId = id;
+    document.getElementById('replyBar').classList.remove('hidden');
+    document.getElementById('replyName').textContent = name;
+    document.getElementById('feedbackInput').placeholder = `Trả lời ${name}...`;
+    document.getElementById('feedbackInput').focus();
+}
+
+// Tắt chế độ reply: reset State và UI input
+function cancelReply() {
+    State.replyParentId = null;
+    document.getElementById('replyBar').classList.add('hidden');
+    document.getElementById('feedbackInput').placeholder = 'Nhập phản hồi...';
+}
+
+// Toggle like/unlike: nếu đã react thì xóa, chưa thì thêm vào mảng reactions
+// Toggle like/unlike trực tiếp trên Supabase
+async function toggleReaction(fbId) {
+    // Tạm lấy danh sách cũ thẳng từ DB ra để tính
+    const { data: fb } = await supabase.from('feedbacks').select('reactions').eq('id', fbId).single();
+    if (!fb) return;
+
+    let reactions = fb.reactions || [];
+    const i = reactions.findIndex(r => r.code === State.user.code);
+    if (i > -1) reactions.splice(i, 1);
+    else reactions.push({ role: State.user.rawRole, code: State.user.code });
+
+    await supabase.from('feedbacks').update({ reactions: reactions }).eq('id', fbId);
+    await renderTimeline(State.currentStudentId); // re-render 
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 7 — STATUS UPDATE (Cập nhật trạng thái sinh viên)
+//
+//  updateStatus(newSt): thay đổi status của SV đang mở trong modal.
+//  – Yêu cầu nhập lý do (không được để trống)
+//  – Tự động tạo 1 feedback hệ thống ghi nhận thay đổi
+//    (ví dụ: "[🔴 Cảnh báo] Nghỉ học nhiều")
+//  – Nếu chuyển sang 'red' lần đầu → tăng badge thông báo
+// ══════════════════════════════════════════════════════════════════
+async function updateStatus(newSt) {
+    if (!State.currentStudentId) return;
+    const reason = prompt('Lý do thay đổi trạng thái (bắt buộc):');
+    if (!reason?.trim()) { alert('Cần nhập lý do!'); return; }
+
+    const s = State.students.find(x => x.id === State.currentStudentId);
+    if (!s) return;
+
+    const old = s.status;
+    const nowISO = new Date().toISOString();
+
+    const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[newSt];
+    const text = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[newSt];
+
+    // Cập nhật trạng thái SV trên DB
+    await supabase.from('students')
+        .update({ status: newSt, updated_at: nowISO })
+        .eq('id', State.currentStudentId);
+
+    // Tạo feedback hệ thống ghi lại lý do thay đổi trạng thái
+    await supabase.from('feedbacks').insert([{
+        student_id: State.currentStudentId,
+        role: State.user.rawRole,
+        author_name: State.user.name,
+        author_code: State.user.code,
+        content: `[${emoji} ${text}] ${reason}`,
+        parent_id: null
+    }]);
+
+    // Cập nhật dòng meta trong header modal
+    document.getElementById('modalMeta').textContent =
+        `${s.mssv} · ${s.lop || 'N/A'} · ${emoji} ${text}`;
+
+    // Tăng badge nếu lần đầu chuyển sang trạng thái đỏ
+    if (newSt === 'red' && old !== 'red') {
+        const badge = document.getElementById('notifBadge');
+        badge.classList.remove('hidden');
+        badge.textContent = (parseInt(badge.textContent) || 0) + 1;
+    }
+
+    await renderTimeline(State.currentStudentId);
+    await initDashboard();
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 8 — ADD STUDENT MODULE (Thêm sinh viên mới)
+//
+//  Luồng MỚI (v2.0):
+//  – Mặc định: GV tìm SV từ bảng student_roster (autocomplete)
+//    → Chọn SV → MSSV + Tên + Lớp tự điền → Nhấn Thêm
+//  – Fallback: Toggle "Nhập tay" → nhập MSSV + Tên + Lớp thủ công
+//  – createStudent(): kiểm tra trùng MSSV trước khi tạo
+//
+//  Roster functions:
+//  – loadRoster()          : tải danh sách SV từ student_roster (1 lần)
+//  – onRosterSearch()      : lọc roster client-side, render dropdown
+//  – selectFromRoster(item): chọn SV, lưu vào State.rosterSelected
+//  – clearRosterSelection(): bỏ chọn, quay lại trạng thái tìm
+//  – toggleManualMode()    : chuyển giữa roster search ↔ nhập tay
+// ══════════════════════════════════════════════════════════════════
+
+// Cache danh sách roster để tìm client-side (load 1 lần)
+let rosterCache = [];
+let rosterLoaded = false;
+
+// Tải toàn bộ student_roster từ Supabase (392 SV ≈ 30KB, rất nhẹ)
+async function loadRoster() {
+    if (rosterLoaded) return;
+    const { data, error } = await supabase
+        .from('student_roster')
+        .select('mssv, ho_ten, lop, ma_mon, giang_vien, nganh')
+        .order('mssv');
+    if (!error && data) {
+        rosterCache = data;
+        rosterLoaded = true;
+        console.log(`📋 Roster loaded: ${data.length} SV`);
+    } else {
+        console.warn('⚠️ Không tải được roster:', error);
+    }
+}
+
+// Xử lý sự kiện gõ trong ô tìm kiếm roster
+function onRosterSearch() {
+    const query = document.getElementById('rosterSearchInput').value.trim();
+    const dropdown = document.getElementById('rosterDropdown');
+
+    if (query.length < 2) {
+        dropdown.classList.remove('active');
+        return;
+    }
+
+    const q = query.toLowerCase();
+    let results = rosterCache
+        .filter(r => r.mssv.toLowerCase().includes(q) || r.ho_ten.toLowerCase().includes(q));
+
+    // Chỉ cho phép tìm SV trong cùng ngành nếu user là GV/CNBM và có khai báo major
+    if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
+        results = results.filter(r => r.nganh === State.user.major);
+    }
+
+    results = results.slice(0, 8);
+
+    if (results.length === 0) {
+        dropdown.innerHTML = '<div class="px-4 py-3 text-sm text-slate-400 text-center">Không tìm thấy SV nào</div>';
+        dropdown.classList.add('active');
+        return;
+    }
+
+    dropdown.innerHTML = results.map((r, i) => `
+                <div class="roster-item" onclick="selectFromRoster(${i}, '${encodeURIComponent(JSON.stringify(r))}')">
+                    <div><span class="ri-mssv">${r.mssv}</span><span class="ri-name">${r.ho_ten}</span></div>
+                    <div class="ri-meta">${r.lop || '—'} · ${r.nganh || '—'}</div>
+                </div>
+            `).join('');
+    dropdown.classList.add('active');
+}
+
+// Khi chọn 1 SV từ dropdown roster
+function selectFromRoster(idx, encodedJson) {
+    const item = JSON.parse(decodeURIComponent(encodedJson));
+
+    // Lưu vào State
+    State.rosterSelected = item;
+
+    // Hiện thông tin đã chọn
+    document.getElementById('selectedName').textContent = item.ho_ten;
+    document.getElementById('selectedMeta').textContent =
+        `${item.mssv} · ${item.lop || '—'} · ${item.nganh || '—'}`;
+    document.getElementById('rosterSelectedInfo').classList.remove('hidden');
+
+    // Ẩn dropdown + clear ô tìm
+    document.getElementById('rosterDropdown').classList.remove('active');
+    document.getElementById('rosterSearchInput').value = '';
+}
+
+// Bỏ chọn SV roster
+function clearRosterSelection() {
+    State.rosterSelected = null;
+    document.getElementById('rosterSelectedInfo').classList.add('hidden');
+    document.getElementById('rosterSearchInput').value = '';
+    document.getElementById('rosterSearchInput').focus();
+}
+
+// Mở modal: reset UI, load roster, focus ô tìm
+async function openAddStudentModal() {
+    State.rosterSelected = null;
+    document.getElementById('rosterSearchInput').value = '';
+    document.getElementById('rosterDropdown').classList.remove('active');
+    document.getElementById('rosterSelectedInfo').classList.add('hidden');
+    const authorInput = document.getElementById('newAuthorCode');
+    authorInput.value = State.user.code || '';
+
+    // Khóa không cho GV đổi mã GV phụ trách
+    if (State.user.rawRole === 'GV') {
+        authorInput.readOnly = true;
+        authorInput.classList.add('bg-slate-50', 'text-slate-500', 'cursor-not-allowed');
+        document.getElementById('authorCodeHelper').textContent = 'Mã của bạn (không thể thay đổi).';
+    } else {
+        authorInput.readOnly = false;
+        authorInput.classList.remove('bg-slate-50', 'text-slate-500', 'cursor-not-allowed');
+        document.getElementById('authorCodeHelper').textContent = 'Có thể sửa nếu bạn (CTSV/CNBM) nhập hộ GV.';
+    }
+
+    document.getElementById('initialFeedback').value = '';
+    document.getElementById('initialStatus').value = 'green';
+    document.getElementById('duplicateWarning').classList.add('hidden');
+
+    document.getElementById('addStudentModal').classList.add('active');
+    await loadRoster();
+    document.getElementById('rosterSearchInput').focus();
+}
+
+function closeAddStudentModal() {
+    document.getElementById('addStudentModal').classList.remove('active');
+}
+
+// Ẩn cảnh báo trùng MSSV khi user bắt đầu sửa lại ô MSSV
+function clearDupWarning() {
+    document.getElementById('duplicateWarning').classList.add('hidden');
+}
+
+// Tạo SV mới: đọc từ roster đã chọn
+async function createStudent() {
+    if (!State.rosterSelected) {
+        alert('Vui lòng chọn sinh viên từ danh sách trước khi thêm.');
+        document.getElementById('rosterSearchInput').focus();
+        return;
+    }
+
+    const feedback = document.getElementById('initialFeedback').value.trim();
+    if (!feedback) {
+        alert('Vui lòng nhập Feedback / Lý do thêm vào danh sách chăm sóc.');
+        document.getElementById('initialFeedback').focus();
+        return;
+    }
+
+    const mssv = State.rosterSelected.mssv;
+    const name = State.rosterSelected.ho_ten;
+    const lop = State.rosterSelected.lop || '';
+    const authorCode = document.getElementById('newAuthorCode').value.trim();
+
+    const btn = document.querySelector('#addStudentModal button[onclick="createStudent()"]');
+    const oldText = btn.innerText;
+    btn.innerText = '⏳ Đang lưu...';
+    btn.disabled = true;
+
+    // 1. Kiểm tra MSSV trên DB
+    const { data: dupData, error: err0 } = await supabase
+        .from('students')
+        .select('ho_ten, id')
+        .eq('mssv', mssv)
+        .maybeSingle();
+
+    if (dupData) {
+        alert(`Sinh viên ${mssv} - ${dupData.ho_ten} đã có trong danh sách chăm sóc! Hệ thống sẽ mở ngay hồ sơ của sinh viên này.`);
+        btn.innerText = oldText;
+        btn.disabled = false;
+        closeAddStudentModal();
+        openStudentModal(dupData.id);
+        return;
+    }
+
+    const initialStatus = document.getElementById('initialStatus').value;
+
+    // 2. Insert vào bảng students
+    const { data: newStu, error: err1 } = await supabase
+        .from('students')
+        .insert([{ mssv, ho_ten: name, status: initialStatus }])
+        .select()
+        .single();
+
+    if (err1) {
+        console.error("Lỗi khi thêm sinh viên:", err1);
+        alert("Lỗi khi thêm sinh viên: " + err1.message);
+        btn.innerText = oldText; btn.disabled = false;
+        return;
+    }
+
+    // 3. Gắn lớp (nếu có)
+    if (lop) {
+        const { error: err2 } = await supabase
+            .from('student_classes')
+            .insert([{
+                student_id: newStu.id,
+                author_code: authorCode || State.user.code,
+                class_name: lop
+            }]);
+        if (err2) console.error("Lỗi thêm vào student_classes:", err2);
+    }
+
+    // 4. Lưu feedback ban đầu
+    const { error: err3 } = await supabase
+        .from('feedbacks')
+        .insert([{
+            student_id: newStu.id,
+            author_code: State.user.code,
+            author_name: State.user.name,
+            role: State.user.rawRole,
+            content: feedback
+        }]);
+    if (err3) console.error("Lỗi thêm feedback ban đầu:", err3);
+
+    btn.innerText = oldText;
+    btn.disabled = false;
+
+    // 5. Load lại Dashboard
+    await initDashboard();
+    closeAddStudentModal();
+}
+
+// Đóng dropdown roster khi click ra ngoài
+document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('rosterDropdown');
+    const input = document.getElementById('rosterSearchInput');
+    if (dropdown && input && !dropdown.contains(e.target) && e.target !== input) {
+        dropdown.classList.remove('active');
+    }
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 9 — ANALYTICS MODULE (Biểu đồ thống kê)
+//
+//  renderAnalytics(): vẽ lại 3 biểu đồ mỗi khi chuyển sang tab Analytics.
+//  Trước khi vẽ mới, hủy (destroy) các instance cũ để tránh memory leak.
+//
+//  3 biểu đồ:
+//  1. Donut (doughnut): phân bổ green/yellow/red
+//     – Dữ liệu động từ DB.students
+//  2. Bar (stacked bar): số SV theo từng lớp
+//     – Parse chuỗi lop → nhóm theo lớp → xếp chồng theo status
+//  3. Line (xu hướng): số cảnh báo theo tuần
+//     – Hardcoded mock data (6 tuần, 2 series: Cảnh báo + Theo dõi)
+// ══════════════════════════════════════════════════════════════════
+function renderAnalytics() {
+    // Hủy chart cũ để tránh lỗi "canvas already in use"
+    Object.values(State.charts).forEach(c => c?.destroy?.());
+    State.charts = {};
+
+    const all = State.students;
+    const g = all.filter(s => (s.status || 'green') === 'green').length;
+    const y = all.filter(s => s.status === 'yellow').length;
+    const r = all.filter(s => s.status === 'red').length;
+
+    // Biểu đồ tròn (Donut): phân bổ 3 trạng thái
+    State.charts.donut = new Chart(document.getElementById('donutChart'), {
+        type: 'doughnut',
+        data: {
+            labels: ['🟢 Ổn định', '🟡 Theo dõi', '🔴 Cảnh báo'],
+            datasets: [{ data: [g, y, r], backgroundColor: ['#10b981', '#f59e0b', '#f43f5e'], borderWidth: 0, hoverOffset: 6 }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { family: 'Inter', size: 12 } } } } }
+    });
+
+    // Biểu đồ cột xếp chồng: nhóm SV theo lớp, chia màu theo trạng thái
+    const cls = {};
+    all.forEach(s => (s.lop || '').split(',').map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+        .forEach(c => { if (!cls[c]) cls[c] = { g: 0, y: 0, r: 0 }; const st = s.status || 'green'; cls[c][st === 'green' ? 'g' : st === 'yellow' ? 'y' : 'r']++; }));
+    const labs = Object.keys(cls).sort();
+    State.charts.bar = new Chart(document.getElementById('barChart'), {
+        type: 'bar',
+        data: {
+            labels: labs, datasets: [
+                { label: 'Ổn định', data: labs.map(l => cls[l].g), backgroundColor: '#10b981' },
+                { label: 'Theo dõi', data: labs.map(l => cls[l].y), backgroundColor: '#f59e0b' },
+                { label: 'Cảnh báo', data: labs.map(l => cls[l].r), backgroundColor: '#f43f5e' },
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { font: { family: 'Inter', size: 11 } } } },
+            scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+
+    // Biểu đồ đường: xu hướng mock 6 tuần (dữ liệu cứng để demo)
+    State.charts.line = new Chart(document.getElementById('lineChart'), {
+        type: 'line',
+        data: {
+            labels: ['Tuần 1', 'Tuần 2', 'Tuần 3', 'Tuần 4', 'Tuần 5', 'Tuần 6'],
+            datasets: [
+                { label: '🔴 Cảnh báo', data: [1, 1, 2, 2, 3, 3], borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.1)', fill: true, tension: .4 },
+                { label: '🟡 Theo dõi', data: [2, 3, 2, 4, 3, 3], borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,.1)', fill: true, tension: .4 },
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { labels: { font: { family: 'Inter', size: 11 } } } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 10 — ADMIN MODULE (Quản lý tài khoản)
+//
+//  renderAdminPanel()   : render danh sách toàn bộ tài khoản trong DB.accounts.
+//                         Mỗi hàng hiện: icon, tên, mã, role, lớp, trạng thái.
+//                         Nút "Vô hiệu hóa / Kích hoạt" (ẩn với Admin).
+//
+//  toggleAccount(code)  : đảo is_active của tài khoản → re-render panel.
+//
+//  openCreateAccount()  : tạo tài khoản mới qua chuỗi prompt() liên tiếp.
+//                         Ưu điểm prototype: không cần form, nhanh gọn.
+//                         Nhược điểm: prompt() chặn main thread (chỉ OK khi demo).
+// ══════════════════════════════════════════════════════════════════
+function renderAdminPanel() {
+    const list = document.getElementById('accountList');
+    list.innerHTML = Object.values(DB.accounts).map(a => {
+        const bgIcon = { Admin: 'bg-rose-100', GV: 'bg-blue-100', CTSV: 'bg-emerald-100', CNBM: 'bg-purple-100' }[a.rawRole] || 'bg-slate-100';
+        const icon = { Admin: '🔧', GV: '👨‍🏫', CTSV: '👤', CNBM: '🎓' }[a.rawRole] || '👤';
+        return `
+        <div class="flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 ${bgIcon} rounded-xl flex items-center justify-center text-lg">${icon}</div>
+                <div>
+                    <p class="font-semibold text-sm text-slate-700">${a.name}</p>
+                    <p class="text-xs text-slate-400"><span class="font-mono">${a.code}</span> · ${a.role}${a.lop ? ' · ' + a.lop : ''}</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs px-2 py-0.5 rounded-full font-semibold ${a.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
+                    ${a.is_active ? 'Active' : 'Inactive'}
+                </span>
+                <!-- Nút toggle ẩn với Admin (không thể tự vô hiệu hóa Admin) -->
+                ${a.rawRole !== 'Admin' ? `
+                <button onclick="toggleAccount('${a.code}')"
+                    class="text-xs px-2.5 py-1 border border-slate-200 rounded-lg hover:bg-slate-100 text-slate-600 transition font-medium">
+                    ${a.is_active ? 'Vô hiệu hóa' : 'Kích hoạt'}
+                </button>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// Toggle kích hoạt / vô hiệu hóa tài khoản
+function toggleAccount(code) {
+    if (DB.accounts[code]) DB.accounts[code].is_active = !DB.accounts[code].is_active;
+    renderAdminPanel(); // re-render để cập nhật badge và nút
+}
+
+// Tạo tài khoản mới qua prompt liên tiếp (UI tối giản cho prototype)
+function openCreateAccount() {
+    const code = prompt('Mã truy cập mới (VD: GV_THANH):'); if (!code) return;
+    const name = prompt('Tên hiển thị:'); if (!name) return;
+    const role = prompt('Vai trò (GV / CTSV / CNBM):'); if (!role) return;
+    const lop = (role === 'GV') ? prompt('Lớp dạy (VD: IT18301):') : null;
+    const c = code.trim().toUpperCase();
+    DB.accounts[c] = { code: c, name: name.trim(), role: role === 'GV' ? 'Giảng viên' : role, rawRole: role.trim(), major: null, lop, is_active: true };
+    renderAdminPanel();
+    alert(`✅ Đã tạo tài khoản: ${c}`);
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 11 — TABS (Điều hướng tab)
+//
+//  switchTab(tab, silent):
+//  – Ẩn tất cả tabContent* ngoại trừ tab đang chọn
+//  – Cập nhật class active / text-color cho các nút tab
+//  – Nếu !silent: gọi renderAnalytics() hoặc renderAdminPanel()
+//    (lazy render: chỉ render khi user thực sự chuyển tab)
+//
+//  cap(s): helper viết hoa chữ cái đầu (vd: 'dashboard' → 'Dashboard')
+//          dùng để tạo id như 'tabContentDashboard', 'tabDashboard'
+// ══════════════════════════════════════════════════════════════════
+function switchTab(tab, silent) {
+    ['dashboard', 'analytics', 'admin'].forEach(t => {
+        const content = document.getElementById('tabContent' + cap(t));
+        if (content) content.classList.toggle('hidden', t !== tab); // ẩn tab không active
+        const btn = document.getElementById('tab' + cap(t));
+        if (btn) { btn.classList.toggle('active', t === tab); btn.classList.toggle('text-slate-400', t !== tab); btn.classList.toggle('text-slate-600', t === tab); }
+    });
+    if (!silent && tab === 'analytics') renderAnalytics(); // lazy init chart
+    if (!silent && tab === 'admin') renderAdminPanel();
+}
+
+// Viết hoa chữ đầu: dùng để map tab name → element id
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 12 — NOTIFICATION MODULE (Thông báo)
+//
+//  toggleNotif()      : toggle dropdown, render nội dung khi mở
+//  renderNotifPanel() : tạo danh sách thông báo từ DB:
+//                       – SV đang cảnh báo đỏ (status='red'), mới nhất trước
+//                       – Click vào item → đóng dropdown, mở hồ sơ SV
+//  markAllRead()      : ẩn badge số, đóng dropdown
+//  closeNotifIfOutside: đóng dropdown khi click ra ngoài
+// ══════════════════════════════════════════════════════════════════
+function toggleNotif() {
+    const dd = document.getElementById('notifDropdown');
+    const isOpen = dd.classList.contains('active');
+    if (!isOpen) renderNotifPanel();
+    dd.classList.toggle('active');
+}
+
+function renderNotifPanel() {
+    const container = document.getElementById('notifList');
+
+    // Lấy các SV đang cảnh báo đỏ, sắp xếp mới nhất trước
+    const redStudents = State.students
+        .filter(s => s.status === 'red')
+        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+
+    if (!redStudents.length) {
+        container.innerHTML = `
+        <div class="px-4 py-8 text-center">
+            <div class="text-3xl mb-2">✅</div>
+            <p class="text-sm text-slate-500">Không có cảnh báo nào</p>
+        </div>`;
+        return;
+    }
+
+    container.innerHTML = redStudents.map(s => {
+        // Lấy feedback gần nhất của SV này
+        const text = s.latestFbContent;
+        const preview = text
+            ? (text.length > 55 ? text.slice(0, 55) + '…' : text)
+            : 'Chưa có phản hồi';
+        return `
+        <div onclick="notifGoTo(${s.id})" class="flex items-start gap-3 px-4 py-3 hover:bg-rose-50 cursor-pointer transition border-b border-slate-50 last:border-0">
+            <div class="w-8 h-8 bg-rose-100 rounded-full flex items-center justify-center text-sm shrink-0 mt-0.5">🔴</div>
+            <div class="min-w-0">
+                <p class="text-sm font-bold text-slate-800">${s.ho_ten}</p>
+                <p class="text-xs text-slate-500 font-mono">${s.mssv} · ${s.lop || 'N/A'}</p>
+                <p class="text-xs text-slate-400 mt-0.5 truncate">💬 ${preview}</p>
+                <p class="text-xs text-rose-400 mt-0.5">⏱️ ${timeAgo(s.updated_at)}</p>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// Click vào 1 thông báo → đóng dropdown + mở hồ sơ SV
+function notifGoTo(studentId) {
+    document.getElementById('notifDropdown').classList.remove('active');
+    openStudentModal(studentId);
+}
+
+// Đánh dấu tất cả đã đọc: ẩn badge + đóng dropdown
+function markAllRead() {
+    document.getElementById('notifBadge').classList.add('hidden');
+    document.getElementById('notifDropdown').classList.remove('active');
+}
+
+// Đóng dropdown khi click ra ngoài vùng chuông
+document.addEventListener('click', function (e) {
+    const wrapper = document.getElementById('notifBtn')?.closest('.relative');
+    if (wrapper && !wrapper.contains(e.target))
+        document.getElementById('notifDropdown')?.classList.remove('active');
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 13 — UI HELPERS (Tiện ích giao diện)
+//
+//  timeAgo(dateString): chuyển timestamp ISO thành chuỗi "X phút trước",
+//  "X giờ trước", "X ngày trước" hoặc "Vừa xong" (nếu < 60 giây).
+//  Dùng ở nhiều nơi: thẻ SV trong danh sách, bubble feedback trong timeline.
+// ══════════════════════════════════════════════════════════════════
+function timeAgo(ds) {
+    if (!ds) return 'N/A';
+    const d = Math.floor((Date.now() - new Date(ds)) / 1000); // delta giây
+    if (d < 60) return 'Vừa xong';
+    if (d < 3600) return `${Math.floor(d / 60)} phút trước`;
+    if (d < 86400) return `${Math.floor(d / 3600)} giờ trước`;
+    return `${Math.floor(d / 86400)} ngày trước`;
+}
+
+console.log('✅ SRMH v2.0 Ready!');
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 14 — REPORT MODULE (Xuất báo cáo phản hồi sinh viên)
+//
+//  Phân quyền:
+//  – Admin, CNBM : tất cả feedback → lọc tuỳ chọn theo lớp
+//  – CTSV        : chỉ feedback mình tạo → lọc theo lớp
+//  – GV          : chỉ feedback mình tạo → lọc theo lớp
+//
+//  Mỗi hàng = 1 SV, hiện feedback GẦN NHẤT do user hiện tại có quyền xem.
+//  Click vào tiêu đề cột → toggle bôi xanh cột đó (dễ select + copy).
+//
+//  openReportModal()  : mở modal, populate dropdown lớp theo role
+//  closeReportModal() : đóng modal, reset state bảng
+//  generateReport()   : lọc dữ liệu → render bảng HTML
+//  highlightCol(i)    : toggle class .col-highlight cho cột thứ i
+// ══════════════════════════════════════════════════════════════════
+
+// Track cột đang được highlight (-1 = không có)
+let _reportHighlightCol = -1;
+
+function openReportModal() {
+    const role = State.user.rawRole;
+
+    // Subtitle mô tả quyền của user hiện tại
+    const subtitleMap = {
+        Admin: 'Quyền xem: Tất cả feedback · Lọc theo lớp tuỳ chọn',
+        CNBM: `Quyền xem: Tất cả feedback — Bộ môn ${State.user.major || 'N/A'} · Lọc theo lớp`,
+        CTSV: 'Quyền xem: Feedback do bạn tạo · Lọc theo lớp',
+        GV: `Quyền xem: Feedback do bạn tạo · Chỉ lớp ${State.user.lop || 'được phân công'}`,
+
+    };
+    document.getElementById('reportSubtitle').textContent = subtitleMap[role] || '';
+
+    // Populate dropdown lớp tuỳ theo role:
+    // – GV   : chỉ hiện lớp của chính GV (State.user.lop), tự động chọn sẵn
+    // – Khác : hiện toàn bộ lớp từ DB.students
+    const sel = document.getElementById('reportClassFilter');
+    sel.innerHTML = '<option value="all">Tất cả lớp</option>';
+    if (role === 'GV' && State.user.lop) {
+        // GV chỉ được xem lớp mình phụ trách
+        const o = document.createElement('option');
+        o.value = State.user.lop; o.textContent = State.user.lop;
+        sel.appendChild(o);
+        sel.value = State.user.lop; // tự động chọn lớp của GV
+    } else {
+        const classSet = new Set();
+        State.students.forEach(s => (s.lop || '').split(',')
+            .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+            .forEach(c => classSet.add(c)));
+        [...classSet].sort().forEach(c => {
+            const o = document.createElement('option');
+            o.value = c; o.textContent = c;
+            sel.appendChild(o);
+        });
+    }
+
+    // Reset bảng về trạng thái placeholder
+    _reportHighlightCol = -1;
+    document.getElementById('reportPlaceholder').classList.remove('hidden');
+    document.getElementById('reportTableContainer').classList.add('hidden');
+    document.getElementById('reportEmpty').classList.add('hidden');
+    document.getElementById('reportSummary').textContent = '';
+
+    document.getElementById('reportModal').classList.add('active');
+}
+
+function closeReportModal() {
+    document.getElementById('reportModal').classList.remove('active');
+    // Reset nút copy toàn bộ về ẩn
+    const btn = document.getElementById('reportCopyAllBtn');
+    if (btn) btn.className = btn.className.replace('flex', 'hidden');
+}
+
+async function generateReport() {
+    const btn = document.querySelector('button[onclick="generateReport()"]');
+    const oldText = btn.innerHTML;
+    btn.innerHTML = '⏳ Đang tạo...';
+    btn.disabled = true;
+
+    const role = State.user.rawRole;
+    const classF = document.getElementById('reportClassFilter').value;
+
+    // Bước 1: Lọc feedback theo phân quyền từ Supabase
+    // – Admin, CNBM: tất cả feedback
+    // – CTSV, GV   : chỉ feedback do bản thân tạo
+    let query = supabase.from('feedbacks').select('*').is('parent_id', null);
+    if (['CTSV', 'GV'].includes(role)) {
+        query = query.eq('author_code', State.user.code);
+    }
+
+    const { data: validFeedbacks, error } = await query.order('created_at', { ascending: false });
+    if (error) {
+        alert("Lỗi tải báo cáo: " + error.message);
+        btn.innerHTML = oldText; btn.disabled = false;
+        return;
+    }
+
+    // Bước 2: Với mỗi SV, lấy feedback GẦN NHẤT trong tập hợp hợp lệ
+    // Kết quả: mảng { student, feedback } — bỏ qua SV không có feedback hợp lệ
+    let rows = State.students
+        .map(s => {
+            const fbs = validFeedbacks.filter(f => f.student_id === s.id);
+            return fbs.length ? { student: s, feedback: fbs[0] } : null;
+        })
+        .filter(Boolean);
+
+    // Bước 3a: Với GV — bắt buộc lọc chỉ hiển thị SV do mình dạy (có tên trong roster)
+    if (role === 'GV') {
+        const ucode = State.user.code.toLowerCase();
+        const uname = State.user.name.toLowerCase();
+        rows = rows.filter(r => {
+            if (!r.student.giang_vien) return false;
+            const gvStr = r.student.giang_vien.toLowerCase();
+            return gvStr.includes(ucode) || gvStr.includes(uname);
+        });
+    }
+
+    // Bước 3b: Lọc thêm theo classF nếu không chọn "Tất cả" (áp dụng cho Admin/CNBM/CTSV)
+    if (classF !== 'all' && role !== 'GV') {
+        rows = rows.filter(r =>
+            (r.student.lop || '').split(',').map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).includes(classF)
+        );
+    }
+
+    btn.innerHTML = oldText; btn.disabled = false;
+    // Ẩn placeholder
+    document.getElementById('reportPlaceholder').classList.add('hidden');
+
+    if (!rows.length) {
+        document.getElementById('reportTableContainer').classList.add('hidden');
+        document.getElementById('reportEmpty').classList.remove('hidden');
+        document.getElementById('reportSummary').textContent = 'Không có dữ liệu';
+        // Ẩn nút copy toàn bộ khi không có dữ liệu
+        const copyAllBtn = document.getElementById('reportCopyAllBtn');
+        if (copyAllBtn) { copyAllBtn.classList.add('hidden'); copyAllBtn.classList.remove('flex'); }
+        return;
+    }
+
+    document.getElementById('reportEmpty').classList.add('hidden');
+    document.getElementById('reportTableContainer').classList.remove('hidden');
+    // Hiện nút "Copy toàn bộ" khi bảng có dữ liệu
+    const copyAllBtn = document.getElementById('reportCopyAllBtn');
+    if (copyAllBtn) { copyAllBtn.classList.remove('hidden'); copyAllBtn.classList.add('flex'); }
+
+    // Bước 4: Render header bảng
+    // Mỗi <th> gắn onclick highlightCol(i) để bôi xanh cả cột
+    const cols = ['MSSV', 'Họ và tên sinh viên', 'Lớp / Mã môn', 'Giảng viên phụ trách', 'Người ghi nhận', 'Phản hồi gần nhất', 'Thời gian'];
+    document.getElementById('reportThead').innerHTML = `
+        <tr>
+            ${cols.map((c, i) => `
+                <th onclick="highlightCol(${i})" title="Click để bôi xanh cột — dễ copy">
+                    ${c} <span style="font-size:9px;opacity:.7">▼</span>
+                </th>
+            `).join('')}
+        </tr>`;
+
+    // Bước 5: Render body bảng
+    // Sort: SV cảnh báo đỏ lên trước, rồi theo thời gian feedback mới nhất
+    rows.sort((a, b) => {
+        const o = { red: 0, yellow: 1, green: 2 };
+        const d = (o[a.student.status || 'green']) - (o[b.student.status || 'green']);
+        return d !== 0 ? d : new Date(b.feedback.created_at) - new Date(a.feedback.created_at);
+    });
+
+    const statusEmoji = { green: '🟢', yellow: '🟡', red: '🔴' };
+
+    document.getElementById('reportTbody').innerHTML = rows.map(({ student: s, feedback: f }) => {
+        const lopDisplay = `${s.lop || 'N/A'}${s.ma_mon ? ` (📚 ${s.ma_mon})` : ''}`;
+        const fbTime = new Date(f.created_at).toLocaleString('vi-VN',
+            { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const authorLabel = f.author_name ? `${f.author_name} (${f.role})` : 'Ẩn danh';
+        const statusMark = statusEmoji[s.status || 'green'];
+
+        return `<tr>
+            <td class="font-mono text-xs text-slate-500 whitespace-nowrap">${s.mssv}</td>
+            <td class="font-semibold text-slate-800 whitespace-nowrap">${s.ho_ten}</td>
+            <td class="text-xs text-slate-600 whitespace-nowrap">${lopDisplay}</td>
+            <td class="text-xs text-slate-600 whitespace-nowrap">${s.giang_vien || 'N/A'}</td>
+            <td class="text-xs text-slate-600 whitespace-nowrap">${authorLabel}</td>
+            <td class="text-sm text-slate-700" style="min-width:260px;max-width:400px">${f.content}</td>
+            <td class="text-xs text-slate-400 whitespace-nowrap">${fbTime}</td>
+        </tr>`;
+    }).join('');
+
+    // Reset highlight cột
+    _reportHighlightCol = -1;
+    _applyColHighlight();
+
+    document.getElementById('reportSummary').textContent =
+        `📋 ${rows.length} sinh viên · Bộ lọc: ${classF === 'all' ? 'Tất cả lớp' : classF} · Hiển thị feedback gần nhất`;
+}
+
+// Toggle bôi xanh cột thứ colIndex (click lần 2 vào cùng cột → bỏ highlight)
+function highlightCol(colIndex) {
+    _reportHighlightCol = (_reportHighlightCol === colIndex) ? -1 : colIndex;
+    _applyColHighlight();
+
+    // Hiện/ẩn nút Copy và hint
+    const hasCol = _reportHighlightCol !== -1;
+    const copyBtn = document.getElementById('reportCopyBtn');
+    const copyHint = document.getElementById('reportCopyHint');
+    if (copyBtn) { copyBtn.classList.toggle('hidden', !hasCol); copyBtn.classList.toggle('flex', hasCol); }
+    if (copyHint) { copyHint.classList.toggle('hidden', hasCol); }
+}
+
+// Thực sự thêm/xóa class highlight cho tất cả ô trong cột đó
+function _applyColHighlight() {
+    const table = document.querySelector('#reportTableContainer .report-table');
+    if (!table) return;
+    const rows = table.querySelectorAll('tr');
+    rows.forEach(row => {
+        row.querySelectorAll('th, td').forEach((cell, i) => {
+            const isHeader = cell.tagName === 'TH';
+            if (_reportHighlightCol === -1) {
+                cell.classList.remove(isHeader ? 'col-highlight-hd' : 'col-highlight');
+            } else if (i === _reportHighlightCol) {
+                cell.classList.add(isHeader ? 'col-highlight-hd' : 'col-highlight');
+            } else {
+                cell.classList.remove(isHeader ? 'col-highlight-hd' : 'col-highlight');
+            }
+        });
+    });
+}
+
+// Copy nội dung cột đang highlight vào clipboard
+// – Lấy text từng ô td trong cột đó (bỏ qua thẻ th đ — header)
+// – Nối bằng newline → có thể paste trực tiếp vào Excel / Google Sheets
+function copyHighlightedCol() {
+    if (_reportHighlightCol === -1) return;
+    const table = document.querySelector('#reportTableContainer .report-table');
+    if (!table) return;
+
+    // Lẵy tất cả các ô td (không lấy th) trong cột được chọn
+    const cells = table.querySelectorAll(`tbody tr td:nth-child(${_reportHighlightCol + 1})`);
+    const text = [...cells].map(c => c.innerText.trim()).join('\n');
+
+    if (!text) { showCopyToast('⚠️ Cột trống, không có gì để copy'); return; }
+
+    navigator.clipboard.writeText(text)
+        .then(() => showCopyToast(`✅ Đã copy ${cells.length} ô vào clipboard!`))
+        .catch(() => {
+            // Fallback cho trình duyệt không hỗ trợ Clipboard API
+            const ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showCopyToast(`✅ Đã copy ${cells.length} ô!`);
+        });
+}
+
+// Hiện toast thông báo nhỏ 2 giây sau đó tự ẩn
+function showCopyToast(msg) {
+    let toast = document.getElementById('copyToast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'copyToast';
+        toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(8px);' +
+            'background:#1e293b;color:white;padding:8px 18px;border-radius:12px;font-size:13px;font-weight:600;' +
+            'z-index:9999;opacity:0;transition:all .2s;pointer-events:none;white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+        document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    // Animate in
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateX(-50%) translateY(0)';
+    });
+    // Animate out sau 2 giây
+    clearTimeout(toast._hideTimer);
+    toast._hideTimer = setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(-50%) translateY(8px)';
+    }, 2000);
+}
+
+// Copy toàn bộ bảng dưới dạng TSV (Tab-Separated Values)
+// – Dòng 1: tiêu đề cột (từ thẻ <th>)
+// – Các dòng tiếp theo: nội dung từng hàng, các ô ngăn cách bằng TAB
+// – Paste vào Excel / Google Sheets sẽ ra đúng từng cột
+function copyFullTable() {
+    const table = document.querySelector('#reportTableContainer .report-table');
+    if (!table) return;
+
+    const lines = [];
+
+    // Hàng header
+    const headers = [...table.querySelectorAll('thead th')].map(th => th.innerText.replace('▼', '').trim());
+    lines.push(headers.join('\t'));
+
+    // Các hàng dữ liệu
+    table.querySelectorAll('tbody tr').forEach(row => {
+        const cells = [...row.querySelectorAll('td')].map(td => td.innerText.trim().replace(/\n/g, ' '));
+        lines.push(cells.join('\t'));
+    });
+
+    const tsv = lines.join('\n');
+    const rowCount = lines.length - 1; // trừ header
+
+    navigator.clipboard.writeText(tsv)
+        .then(() => showCopyToast(`✅ Đã copy toàn bộ bảng (${rowCount} dòng, ${headers.length} cột)!`))
+        .catch(() => {
+            const ta = document.createElement('textarea');
+            ta.value = tsv; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showCopyToast(`✅ Đã copy toàn bộ bảng (${rowCount} dòng)!`);
+        });
+}

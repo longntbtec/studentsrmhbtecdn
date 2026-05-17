@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRMH v2.0</title>
+
+    <!--
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║  THƯ VIỆN NGOÀI (External Libraries)                            ║
+    ║  – Tailwind CSS CDN : cung cấp toàn bộ utility class CSS       ║
+    ║  – Chart.js v4.4   : vẽ biểu đồ donut / bar / line             ║
+    ║  – Google Fonts     : font chữ Inter (body text)               ║
+    ╚══════════════════════════════════════════════════════════════════╝
+    -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<!--
+    Nền trang: gradient nhẹ từ slate-50 → white → indigo-50
+    Chiều cao tối thiểu: 100vh (full viewport)
+-->
+
+<body class="bg-gradient-to-br from-slate-50 via-white to-indigo-50 min-h-screen">
+
+
+    <!-- ════════════════════════════════════════════════════════════════
+     MÀN HÌNH ĐĂNG NHẬP (LOGIN SCREEN)
+     Hiển thị mặc định khi vào trang (before auth).
+     Chức năng:
+     – Nhập mã truy cập thủ công vào ô input
+     – Nhấn Enter hoặc button "Đăng nhập" → gọi login()
+     – 4 nút "Đăng nhập nhanh" để test từng role
+       (GV, CTSV, Admin) mà không cần gõ mã
+     ════════════════════════════════════════════════════════════════ -->
+    <div id="loginScreen" class="min-h-screen flex items-center justify-center p-4">
+        <div class="w-full max-w-sm">
+            <!-- Logo & tiêu đề ứng dụng -->
+            <div class="text-center mb-8">
+                <div
+                    class="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-gradient-to-br from-violet-600 to-indigo-600 shadow-xl shadow-indigo-200 mb-4">
+                    <span class="text-3xl">🎓</span>
+                </div>
+                <h1 class="text-3xl font-black text-slate-800">SRMH</h1>
+                <p class="text-slate-500 text-sm mt-1">Student Real-time Monitoring Hub</p>
+                <span
+                    class="inline-block mt-2 text-xs bg-violet-100 text-violet-700 px-3 py-1 rounded-full font-bold">v2.0</span>
+            </div>
+
+            <!-- Form đăng nhập -->
+            <div class="bg-white rounded-2xl shadow-xl border border-slate-100 p-6">
+                <label class="block text-sm font-semibold text-slate-700 mb-2">Mã truy cập</label>
+                <!-- type="text" nhưng được mask bằng hàm JavaScript (Delay mask) -->
+                <input type="text" id="accessCode" placeholder="Nhập mã..."
+                    class="w-full px-4 py-3 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none font-mono mb-3 transition tracking-widest"
+                    onkeypress="if(event.key==='Enter') login()" oninput="handleAccessCodeInput(event)">
+                <button onclick="login()"
+                    class="w-full py-3 bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl font-bold text-sm hover:shadow-lg hover:shadow-indigo-200 transition hover:-translate-y-0.5">
+                    Đăng nhập
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════
+     ỨNG DỤNG CHÍNH (MAIN APP)
+     Ẩn mặc định (class="hidden"), hiện ra sau khi đăng nhập.
+     Bao gồm: Header + 3 tab nội dung (Dashboard / Analytics / Admin)
+     ════════════════════════════════════════════════════════════════ -->
+    <div id="mainApp" class="hidden">
+
+        <!-- ══════════════════════════════════════════
+         HEADER (thanh điều hướng cố định)
+         – sticky top-0: bám sát mép trên
+         – Logo + Tab navigation (Dashboard / Analytics / Admin)
+         – Nút thông báo (badge đỏ khi có cảnh báo mới)
+         – Tên & role người dùng + nút Đăng xuất
+         ══════════════════════════════════════════ -->
+        <header class="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+            <div class="max-w-7xl mx-auto px-4 flex items-center justify-between h-14">
+
+                <!-- Bên trái: Logo + Tab nav -->
+                <div class="flex items-center gap-5">
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span class="text-xl">🎓</span>
+                        <span class="font-black text-slate-800 hidden sm:block">SRMH</span>
+                        <span
+                            class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full font-bold">v2.0</span>
+                    </div>
+
+                    <!-- Tabs: mỗi nút gọi switchTab() để chuyển nội dung -->
+                    <nav class="flex items-center">
+                        <button id="tabDashboard" onclick="switchTab('dashboard')"
+                            class="tab-btn active text-sm font-semibold px-3 py-4 text-slate-600 hover:text-indigo-600">Dashboard</button>
+                        <button id="tabAnalytics" onclick="switchTab('analytics')"
+                            class="tab-btn text-sm font-semibold px-3 py-4 text-slate-400 hover:text-indigo-600">Analytics</button>
+                        <!-- Tab Admin chỉ hiện với role Admin (ẩn mặc định) -->
+                        <button id="tabAdmin" onclick="switchTab('admin')"
+                            class="tab-btn hidden text-sm font-semibold px-3 py-4 text-slate-400 hover:text-indigo-600">Admin</button>
+                    </nav>
+                </div>
+
+                <!-- Bên phải: Thông báo + Thông tin user + Đăng xuất -->
+                <div class="flex items-center gap-2">
+                    <!-- Chuông thông báo: badge đỏ hiện khi có SV vừa chuyển sang cảnh báo đỏ -->
+                    <!-- Wrapper relative để dropdown định vị đúng bên dưới chuông -->
+                    <div class="relative">
+                        <button onclick="toggleNotif()" id="notifBtn"
+                            class="relative p-2 rounded-lg hover:bg-slate-100 transition" title="Thông báo">
+                            <svg class="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                            </svg>
+                            <!-- Badge số thông báo chưa đọc, ẩn khi = 0 -->
+                            <span id="notifBadge"
+                                class="hidden absolute top-1 right-1 w-4 h-4 bg-rose-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">0</span>
+                        </button>
+
+                        <!-- Notification dropdown panel: nội dung được render bởi renderNotifPanel() -->
+                        <div id="notifDropdown" class="notif-dropdown">
+                            <!-- Header -->
+                            <div class="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+                                <p class="text-sm font-bold text-slate-700">🔔 Thông báo</p>
+                                <button onclick="markAllRead()"
+                                    class="text-xs text-indigo-600 hover:text-indigo-800 font-semibold transition">Đánh
+                                    dấu đã đọc</button>
+                            </div>
+                            <!-- Danh sách thông báo -->
+                            <div id="notifList" class="py-1"></div>
+                        </div>
+                    </div>
+
+                    <!-- Thông tin user đăng nhập (tên + role) + nút đăng xuất -->
+                    <div class="pl-2 border-l border-slate-200 flex items-center gap-2">
+                        <div class="text-right hidden sm:block">
+                            <p id="headerName" class="text-sm font-bold text-slate-700"></p>
+                            <p id="headerRole" class="text-xs text-slate-400"></p>
+                        </div>
+                        <button onclick="logout()"
+                            class="text-xs px-3 py-1.5 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 text-slate-600 rounded-lg transition font-semibold">Đăng
+                            xuất</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- ══════════════════════════════════════════════════════
+         TAB: DASHBOARD
+         Màn hình chính sau đăng nhập. Bao gồm:
+         1. Stats row    : 4 thẻ thống kê tổng / xanh / vàng / đỏ
+                           (click vào thẻ → lọc danh sách theo status)
+         2. Filter bar   : ô tìm kiếm, dropdown lọc lớp, 2 nút lọc nhanh
+         3. Student list : danh sách SV được render bởi renderStudents()
+         ══════════════════════════════════════════════════════ -->
+        <div id="tabContentDashboard" class="max-w-7xl mx-auto px-4 py-5">
+
+            <!-- Hàng 4 thẻ thống kê (click để lọc theo trạng thái) -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <!-- Thẻ Tổng SV: click → filterByStatus('all') -->
+                <div id="statAll" onclick="filterByStatus('all')"
+                    class="card-hover bg-white rounded-xl border border-slate-100 shadow-sm p-4 cursor-pointer ring-0 transition-all">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-500 font-medium mb-1">Tổng SV</p>
+                            <p id="cntTotal" class="text-2xl font-black text-slate-800">0</p>
+                        </div>
+                        <div class="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-xl">👥</div>
+                    </div>
+                </div>
+                <!-- Thẻ Ổn định (green) -->
+                <div id="statGreen" onclick="filterByStatus('green')"
+                    class="card-hover bg-white rounded-xl border border-slate-100 shadow-sm p-4 cursor-pointer ring-0 transition-all">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-500 font-medium mb-1">Ổn định</p>
+                            <p id="cntGreen" class="text-2xl font-black text-emerald-600">0</p>
+                        </div>
+                        <div class="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-xl">🟢
+                        </div>
+                    </div>
+                </div>
+                <!-- Thẻ Theo dõi (yellow) -->
+                <div id="statYellow" onclick="filterByStatus('yellow')"
+                    class="card-hover bg-white rounded-xl border border-slate-100 shadow-sm p-4 cursor-pointer ring-0 transition-all">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-500 font-medium mb-1">Theo dõi</p>
+                            <p id="cntYellow" class="text-2xl font-black text-amber-500">0</p>
+                        </div>
+                        <div class="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center text-xl">🟡</div>
+                    </div>
+                </div>
+                <!-- Thẻ Cảnh báo (red): icon nhấp nháy (pulse) để gây chú ý -->
+                <div id="statRed" onclick="filterByStatus('red')"
+                    class="card-hover bg-white rounded-xl border border-slate-100 shadow-sm p-4 cursor-pointer ring-0 transition-all">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-500 font-medium mb-1">Cảnh báo</p>
+                            <p id="cntRed" class="text-2xl font-black text-rose-600">0</p>
+                        </div>
+                        <div class="w-10 h-10 bg-rose-50 rounded-xl flex items-center justify-center pulse text-xl">🔴
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Thanh lọc (Filter bar) -->
+            <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-3 mb-4">
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <!-- Ô tìm kiếm: lọc realtime theo MSSV hoặc họ tên (oninput) -->
+                    <input type="text" id="searchInput" placeholder="🔍 Tìm MSSV hoặc Họ tên..."
+                        class="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-xl focus:border-indigo-400 focus:outline-none"
+                        oninput="renderStudents()">
+                    <!-- Dropdown lọc theo bộ môn (hiển thị động cho Admin/CTSV) -->
+                    <select id="majorFilter" onchange="renderStudents()"
+                        class="hidden px-3 py-2 text-sm border border-slate-200 rounded-xl focus:border-indigo-400 focus:outline-none bg-white">
+                        <option value="all">📚 Tất cả bộ môn</option>
+                    </select>
+                    <!-- Dropdown lọc theo lớp học (được populate động bởi populateClassFilter()) -->
+                    <select id="classFilter" onchange="renderStudents()"
+                        class="px-3 py-2 text-sm border border-slate-200 rounded-xl focus:border-indigo-400 focus:outline-none bg-white">
+                        <option value="all">🏫 Tất cả lớp</option>
+                    </select>
+                    <!-- Nút lọc nhanh: chỉ hiện SV "cần chăm sóc" (yellow + red) -->
+                    <button onclick="filterByStatus('attention')"
+                        class="px-3 py-2 text-sm font-semibold bg-gradient-to-r from-amber-500 to-rose-500 text-white rounded-xl hover:shadow-md transition">
+                        ⚠️ Cần chăm sóc
+                    </button>
+                    <!-- Nút mở modal thêm sinh viên mới -->
+                    <button onclick="openAddStudentModal()"
+                        class="px-3 py-2 text-sm font-semibold bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl hover:shadow-md transition flex items-center gap-1">
+                        <span class="text-base leading-none font-bold">+</span> Thêm SV
+                    </button>
+                    <!-- Nút xuất báo cáo -->
+                    <button onclick="openReportModal()"
+                        class="px-3 py-2 text-sm font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-xl hover:shadow-md transition flex items-center gap-1">
+                        📄 Báo cáo
+                    </button>
+                </div>
+            </div>
+
+            <!-- Container danh sách sinh viên: nội dung được render bởi renderStudents() -->
+            <div id="studentList" class="flex flex-col gap-2 mb-8"></div>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════
+         TAB: ANALYTICS
+         Hiển thị 3 biểu đồ thống kê (vẽ bởi Chart.js):
+         1. Donut chart  : phân bổ trạng thái (xanh / vàng / đỏ)
+         2. Bar chart    : số SV theo từng lớp, xếp chồng theo status
+         3. Line chart   : xu hướng cảnh báo theo tuần (mock data)
+         Mỗi <canvas> là canvas Chart.js, được khởi tạo trong renderAnalytics().
+         ══════════════════════════════════════════════════════ -->
+        <div id="tabContentAnalytics" class="hidden max-w-7xl mx-auto px-4 py-5">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <!-- Biểu đồ tròn: phân bổ trạng thái -->
+                <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
+                    <h3 class="font-bold text-slate-700 mb-4 text-sm">📊 Phân bổ trạng thái hiện tại</h3>
+                    <div style="height:220px;" class="flex items-center justify-center">
+                        <canvas id="donutChart"></canvas>
+                    </div>
+                </div>
+                <!-- Biểu đồ cột: số SV theo từng lớp học -->
+                <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
+                    <h3 class="font-bold text-slate-700 mb-4 text-sm">🏫 Theo từng lớp học</h3>
+                    <div style="height:220px;"><canvas id="barChart"></canvas></div>
+                </div>
+                <!-- Biểu đồ đường: xu hướng theo tuần (full width) -->
+                <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5 md:col-span-2">
+                    <h3 class="font-bold text-slate-700 mb-4 text-sm">📈 Xu hướng cảnh báo theo tuần (mock)</h3>
+                    <div style="height:180px;"><canvas id="lineChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══════════════════════════════════════════════════════
+         TAB: ADMIN (chỉ hiện với role Admin)
+         Hiển thị danh sách tất cả tài khoản trong DB.accounts.
+         Chức năng:
+         – Xem thông tin tài khoản (tên, mã, role, lớp)
+         – Toggle kích hoạt / vô hiệu hóa (không tác dụng với Admin)
+         – Tạo tài khoản mới bằng prompt() đơn giản
+         ══════════════════════════════════════════════════════ -->
+        <div id="tabContentAdmin" class="hidden max-w-7xl mx-auto px-4 py-5">
+            <div class="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
+                <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+                    <h3 class="font-bold text-slate-700">👥 Quản lý tài khoản</h3>
+                    <button onclick="openCreateAccount()"
+                        class="text-xs px-3 py-2 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition">+
+                        Tạo tài khoản</button>
+                </div>
+                <!-- Danh sách tài khoản: render bởi renderAdminPanel() -->
+                <div id="accountList" class="divide-y divide-slate-50"></div>
+            </div>
+        </div>
+
+    </div><!-- end #mainApp -->
+
+
+    <!-- ════════════════════════════════════════════════════════════════
+     MODAL: CHI TIẾT SINH VIÊN (STUDENT DETAIL)
+     Mở khi click vào thẻ sinh viên trong danh sách.
+     Cấu trúc:
+     ┌─────────────────────────────────────┐
+     │ [Inner Overlay: hỏi lớp lần đầu]   │ ← chồng lên trên
+     │ Header (gradient): tên, MSSV, lớp  │
+     │   + nút đổi trạng thái 🟢🟡🔴      │
+     │ Timeline: danh sách phản hồi        │
+     │ Input bar: gõ + gửi phản hồi        │
+     └─────────────────────────────────────┘
+     Click ngoài overlay (event.target===this) → đóng modal
+     ════════════════════════════════════════════════════════════════ -->
+    <div id="studentModal" class="modal-overlay" onclick="if(event.target===this) closeStudentModal()">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-3 flex flex-col overflow-hidden relative"
+            style="max-height:88vh">
+
+            <!-- ── Inner Overlay: Nhập lớp lần đầu (First-time class prompt) ──
+             Xuất hiện khi GV gửi feedback lần đầu cho 1 sinh viên.
+             Mục đích: ghi nhận GV đang dạy lớp nào cho SV đó (lazy registration).
+             – Nút "Xác nhận & Gửi": gọi confirmClass() → cập nhật trường lop của SV
+             – Nút "Bỏ qua": gọi skipClass() → gửi feedback mà không cập nhật lớp -->
+            <div id="classPromptOverlay" class="inner-overlay rounded-2xl">
+                <div class="bg-white rounded-2xl shadow-2xl p-6 mx-4 w-full max-w-sm">
+                    <div class="text-center mb-5">
+                        <div
+                            class="w-14 h-14 bg-indigo-50 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-3">
+                            📝</div>
+                        <h3 class="font-black text-slate-800 text-lg">Lần đầu ghi nhận</h3>
+                        <p class="text-sm text-slate-500 mt-1.5">Bạn đang dạy lớp nào cho<br><strong
+                                id="promptStudentName" class="text-slate-800"></strong>?</p>
+                    </div>
+                    <div class="mb-4">
+                        <!-- Input được prefill bằng State.user.lop (lớp mặc định của GV) -->
+                        <input type="text" id="classPromptInput" placeholder="VD: MK18301"
+                            class="w-full px-3 py-2.5 border-2 border-slate-200 rounded-xl text-sm font-mono focus:border-indigo-500 focus:outline-none"
+                            onkeypress="if(event.key==='Enter') confirmClass()">
+                        <p class="text-xs text-slate-400 mt-1.5">💡 Thông tin này chỉ hỏi một lần duy nhất</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="skipClass()"
+                            class="flex-1 py-2.5 text-sm text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50 transition font-semibold">Bỏ
+                            qua</button>
+                        <button onclick="confirmClass()"
+                            class="flex-1 py-2.5 text-sm bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl hover:shadow-md transition font-semibold">Xác
+                            nhận &amp; Gửi</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Header modal: gradient tím, hiển thị tên + MSSV + lớp + trạng thái -->
+            <div class="bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-4 text-white shrink-0">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h2 id="modalName" class="text-xl font-black"></h2>
+                        <!-- modalMeta: "MSSV · Lớp · Trạng thái" -->
+                        <p id="modalMeta" class="text-indigo-200 text-sm mt-0.5"></p>
+                        <!-- modalDetail: "📚 Mã môn · 👨‍🏫 GV" (dòng 2, nhỏ hơn) -->
+                        <p id="modalDetail" class="text-indigo-300/80 text-xs mt-0.5"></p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <!-- Nhóm nút đổi trạng thái: chỉ hiện với GV / CTSV / CNBM
+                         Mỗi nút gọi updateStatus(newStatus) → yêu cầu nhập lý do -->
+                        <div id="statusBtns" style="display:none" class="flex gap-1.5">
+                            <button onclick="updateStatus('green')"
+                                class="px-2.5 py-1.5 bg-white/20 hover:bg-emerald-500 text-white rounded-lg text-sm transition font-bold"
+                                title="Ổn định">🟢</button>
+                            <button onclick="updateStatus('yellow')"
+                                class="px-2.5 py-1.5 bg-white/20 hover:bg-amber-500  text-white rounded-lg text-sm transition font-bold"
+                                title="Theo dõi">🟡</button>
+                            <button onclick="updateStatus('red')"
+                                class="px-2.5 py-1.5 bg-white/20 hover:bg-rose-500   text-white rounded-lg text-sm transition font-bold"
+                                title="Cảnh báo">🔴</button>
+                        </div>
+                        <!-- Nút đóng modal -->
+                        <button onclick="closeStudentModal()"
+                            class="text-white/70 hover:text-white text-2xl leading-none ml-1">×</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vùng Timeline phản hồi: danh sách feedback được render bởi renderTimeline()
+             overflow-y-auto: cuộn riêng khi nội dung dài, không ảnh hưởng input bar -->
+            <div id="feedbackTimeline" class="flex-1 overflow-y-auto p-4 bg-slate-50 space-y-3"></div>
+
+            <!-- Vùng nhập phản hồi (cố định dưới cùng modal)
+             – Reply bar: hiện khi đang reply (replyTo), ẩn khi hủy (cancelReply)
+             – Input + nút Gửi: gọi sendFeedback() -->
+            <div class="p-4 bg-white border-t border-slate-100 shrink-0">
+                <!-- Thanh "đang trả lời ai" (ẩn mặc định) -->
+                <div id="replyBar"
+                    class="hidden mb-2 flex items-center justify-between text-xs bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg">
+                    <span>↪️ Trả lời <strong id="replyName"></strong></span>
+                    <button onclick="cancelReply()" class="hover:text-indigo-900 font-bold">✕</button>
+                </div>
+                <div class="flex gap-2">
+                    <input type="text" id="feedbackInput" placeholder="Nhập phản hồi..."
+                        class="flex-1 px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none"
+                        onkeypress="if(event.key==='Enter') sendFeedback()">
+                    <button onclick="sendFeedback()"
+                        class="px-5 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition">Gửi</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ════════════════════════════════════════════════════════════════
+     MODAL: THÊM SINH VIÊN (ADD STUDENT)
+     Form đơn giản 1 bước:
+     – GV điền thẳng MSSV + Họ tên + Lớp rồi nhấn "Thêm vào danh sách"
+     – Nếu MSSV đã tồn tại: hiện cảnh báo inline với tên SV + gợi ý tìm kiếm
+     – Nếu MSSV mới: tạo SV, đóng modal, mở hồ sơ SV ngay
+     ════════════════════════════════════════════════════════════════ -->
+    <div id="addStudentModal" class="modal-overlay" onclick="if(event.target===this) closeAddStudentModal()">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-3 overflow-hidden">
+            <div
+                class="bg-gradient-to-r from-violet-600 to-indigo-600 px-5 py-4 text-white flex items-center justify-between">
+                <h2 class="font-black text-lg">+ Thêm Sinh Viên</h2>
+                <button onclick="closeAddStudentModal()" class="text-white/70 hover:text-white text-2xl">×</button>
+            </div>
+            <div class="p-5 space-y-4">
+
+                <!-- Cảnh báo trùng MSSV -->
+                <div id="duplicateWarning"
+                    class="hidden bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+                    <div class="flex items-start gap-2">
+                        <span class="text-lg leading-none shrink-0">⚠️</span>
+                        <div>
+                            MSSV <strong id="dupMSSV" class="font-mono"></strong> đã có trong danh sách:
+                            <strong id="dupName" class="text-amber-900"></strong>.
+                            <br>
+                            <span class="text-amber-700">Dùng ô 🔍 tìm kiếm ngoài dashboard để xem hồ sơ.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ Tìm từ danh sách SV kỳ SU26 (autocomplete roster) ═══ -->
+                <div id="rosterSearchSection">
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">🔍 Tìm sinh viên trong danh sách kỳ SU26</label>
+                    <div class="relative">
+                        <input type="text" id="rosterSearchInput" placeholder="Gõ MSSV hoặc Họ tên... (VD: BD00555 hoặc Nguyễn)"
+                            class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none"
+                            oninput="onRosterSearch()" autocomplete="off">
+                        <div id="rosterDropdown" class="roster-dropdown"></div>
+                    </div>
+                    <p class="text-[10px] text-slate-400 mt-1">💡 Gõ ít nhất 2 ký tự để tìm. Chọn SV từ danh sách gợi ý.</p>
+                </div>
+
+                <!-- Thông tin SV đã chọn -->
+                <div id="rosterSelectedInfo" class="hidden bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-bold text-indigo-900" id="selectedName">—</p>
+                            <p class="text-xs text-indigo-600 font-mono" id="selectedMeta">—</p>
+                        </div>
+                        <button onclick="clearRosterSelection()" class="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">✕ Bỏ chọn</button>
+                    </div>
+                </div>
+
+                <!-- Mã GV phụ trách (Đã ẩn đi vì là mã bí mật) -->
+                <div class="hidden">
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">Mã giảng viên phụ trách lớp</label>
+                    <input type="text" id="newAuthorCode" placeholder="VD: anhnv123"
+                        class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none font-mono transition-colors">
+                    <p id="authorCodeHelper" class="text-[10px] text-slate-500 mt-1">Mã GV phụ trách lớp (GV không được sửa trường này).</p>
+                </div>
+
+                <!-- Feedback ban đầu (Bắt buộc) -->
+                <div>
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">Feedback / Lý do thêm vào danh sách chăm sóc *</label>
+                    <textarea id="initialFeedback" rows="3" placeholder="Ghi chú tình trạng hiện tại của sinh viên... (Ví dụ: Vắng nhiều, cần liên hệ phụ huynh)"
+                        class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none resize-none"></textarea>
+                </div>
+
+                <!-- Trạng thái ban đầu (Mặc định: Xanh) -->
+                <div>
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">Trạng thái ban đầu</label>
+                    <select id="initialStatus" class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none bg-white">
+                        <option value="green">🟢 Ổn định (Xanh)</option>
+                        <option value="yellow">🟡 Cần theo dõi (Vàng)</option>
+                        <option value="red">🔴 Cảnh báo (Đỏ)</option>
+                    </select>
+                </div>
+
+                <div class="flex gap-2 pt-1">
+                    <button onclick="closeAddStudentModal()"
+                        class="flex-1 py-2.5 text-sm border border-slate-200 rounded-xl font-semibold text-slate-600 hover:bg-slate-50 transition">Hủy</button>
+                    <button onclick="createStudent()"
+                        class="flex-1 py-2.5 text-sm bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl font-bold hover:shadow-md transition">Thêm
+                        vào danh sách →</button>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ════════════════════════════════════════════════════════════════
+     MODAL: XUẤT BÁO CÁO (REPORT)
+     Cấu trúc:
+     ┌─────────────────────────────────────────────┐
+     │ Header: tiêu đề + nút đóng                  │
+     │ Filter bar: dropdown lớp + nút Tạo báo cáo  │
+     │ Vùng bảng (cuộn): report-table              │
+     │   Click vào tiêu đề cột → bôi xanh cả cột  │
+     │   để user dễ select + copy                  │
+     └─────────────────────────────────────────────┘
+     Phân quyền:
+     – Admin, CNBM : tất cả feedback (lọc theo lớp tuỳ chọn)
+     – CTSV        : chỉ feedback tự tạo (lọc theo lớp)
+     – GV          : chỉ feedback tự tạo (lọc theo lớp)
+     ════════════════════════════════════════════════════════════════ -->
+    <div id="reportModal" class="modal-overlay" onclick="if(event.target===this) closeReportModal()">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl mx-3 flex flex-col overflow-hidden"
+            style="max-height:90vh">
+
+            <!-- Header -->
+            <div
+                class="bg-gradient-to-r from-emerald-600 to-teal-600 px-5 py-4 text-white flex items-center justify-between shrink-0">
+                <div>
+                    <h2 class="font-black text-lg">📄 Xuất báo cáo phản hồi sinh viên</h2>
+                    <p id="reportSubtitle" class="text-emerald-100 text-xs mt-0.5"></p>
+                </div>
+                <button onclick="closeReportModal()" class="text-white/70 hover:text-white text-2xl">×</button>
+            </div>
+
+            <!-- Filter bar -->
+            <div class="px-5 py-3 border-b border-slate-100 bg-slate-50 flex flex-wrap items-center gap-3 shrink-0">
+                <div class="flex items-center gap-2">
+                    <label class="text-xs font-bold text-slate-600">🏫 Lớp:</label>
+                    <!-- Dropdown lọc lớp: được populate bởi openReportModal() -->
+                    <select id="reportClassFilter"
+                        class="px-3 py-1.5 text-sm border border-slate-200 rounded-xl focus:border-emerald-400 focus:outline-none bg-white">
+                        <option value="all">Tất cả lớp</option>
+                    </select>
+                </div>
+                <button onclick="generateReport()"
+                    class="px-4 py-1.5 text-sm font-bold bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition">
+                    🔄 Tạo báo cáo
+                </button>
+                <!-- Nút copy cột: Ẩn mặc định, hiện khi có cột được chọn -->
+                <button id="reportCopyBtn" onclick="copyHighlightedCol()"
+                    class="hidden items-center gap-1.5 px-3 py-1.5 text-sm font-bold bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition">
+                    📋 Copy cột
+                </button>
+                <!-- Nút copy toàn bộ bảng: luôn hiện khi bảng đã được tạo -->
+                <button id="reportCopyAllBtn" onclick="copyFullTable()"
+                    class="hidden items-center gap-1.5 px-3 py-1.5 text-sm font-bold bg-slate-700 text-white rounded-xl hover:bg-slate-800 transition">
+                    📂 Copy toàn bộ
+                </button>
+                <!-- Hint: hiện khi chưa chọn cột, ẩn khi đang chọn -->
+                <p id="reportCopyHint" class="text-xs text-slate-400 ml-auto">Click vào tiêu đề cột để chọn → hiện nút
+                    copy</p>
+            </div>
+
+            <!-- Vùng bảng (cuộn) -->
+            <div class="flex-1 overflow-auto p-5">
+                <div id="reportTableWrap">
+                    <!-- Placeholder trước khi nhấn "Tạo báo cáo" -->
+                    <div id="reportPlaceholder" class="text-center text-slate-400 py-16">
+                        <div class="text-4xl mb-3">📋</div>
+                        <p class="text-sm">Nhấn <strong>Tạo báo cáo</strong> để xem dữ liệu</p>
+                    </div>
+                    <!-- Bảng báo cáo: render bởi generateReport() -->
+                    <div id="reportTableContainer" class="hidden overflow-x-auto rounded-xl border border-slate-200">
+                        <table class="report-table">
+                            <thead id="reportThead"></thead>
+                            <tbody id="reportTbody"></tbody>
+                        </table>
+                    </div>
+                    <!-- Khu vực không có dữ liệu -->
+                    <div id="reportEmpty" class="hidden text-center text-slate-400 py-16">
+                        <div class="text-4xl mb-3">🔍</div>
+                        <p class="text-sm">Không có dữ liệu phù hợp với bộ lọc hiện tại</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer: tóm tắt số dòng -->
+            <div class="px-5 py-3 border-t border-slate-100 bg-slate-50 flex items-center justify-between shrink-0">
+                <p id="reportSummary" class="text-xs text-slate-500"></p>
+                <button onclick="closeReportModal()"
+                    class="text-xs px-4 py-2 border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-100 transition font-semibold">Đóng</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ════════════════════════════════════════════════════════════════
+<!-- Supabase UMD Load -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2.39.3/dist/umd/supabase.js"></script>
+
+    <script src="script.js"></script>
+</body>
+
+</html>

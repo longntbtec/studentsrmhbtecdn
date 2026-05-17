@@ -1,0 +1,315 @@
+        /* ── Áp dụng font Inter toàn trang ── */
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+
+
+
+        /* ══════════════════════════════════════
+           STATUS STRIPS (thanh màu trạng thái)
+           Dải màu dọc bên trái mỗi thẻ sinh viên,
+           giúp nhận biết nhanh trạng thái:
+           – xanh lá (green)  : Ổn định
+           – vàng (yellow)    : Cần theo dõi
+           – đỏ (red)         : Cảnh báo
+           ══════════════════════════════════════ */
+        .strip-green {
+            background: linear-gradient(180deg, #10b981, #059669);
+        }
+
+        .strip-yellow {
+            background: linear-gradient(180deg, #f59e0b, #d97706);
+        }
+
+        .strip-red {
+            background: linear-gradient(180deg, #f43f5e, #e11d48);
+        }
+
+        /* ══════════════════════════════════════
+           SKELETON LOADER
+           Hiệu ứng "shimmer" (sóng sáng trái-phải)
+           dùng để làm placeholder khi dữ liệu
+           chưa tải xong (ux loading state).
+           ══════════════════════════════════════ */
+        .skeleton {
+            background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.4s infinite;
+            border-radius: 10px;
+        }
+
+        @keyframes shimmer {
+            0% {
+                background-position: 200% 0
+            }
+
+            100% {
+                background-position: -200% 0
+            }
+        }
+
+        /* ══════════════════════════════════════
+           MODAL OVERLAY
+           Lớp phủ mờ (backdrop) khi mở modal.
+           – display: none (ẩn mặc định)
+           – thêm class .active → display: flex
+             để hiện modal căn giữa màn hình
+           ══════════════════════════════════════ */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(4px);
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        /* ══════════════════════════════════════
+           CARD HOVER EFFECT
+           Hiệu ứng nâng thẻ lên khi hover,
+           tạo cảm giác 3D nhẹ cho các card.
+           ══════════════════════════════════════ */
+        .card-hover {
+            transition: all 0.2s cubic-bezier(.4, 0, .2, 1);
+        }
+
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 24px -6px rgba(0, 0, 0, .1);
+        }
+
+        /* ══════════════════════════════════════
+           TAB NAVIGATION
+           Gạch chân tab đang active bằng màu indigo.
+           Dùng border-bottom thay vì background
+           để tạo cảm giác tab tối giản.
+           ══════════════════════════════════════ */
+        .tab-btn {
+            border-bottom: 2px solid transparent;
+            transition: all .2s;
+        }
+
+        .tab-btn.active {
+            color: #4f46e5;
+            border-bottom-color: #4f46e5;
+        }
+
+        /* ══════════════════════════════════════
+           REACTION BUTTON (nút tim / like)
+           – Mặc định: trong suốt, không viền
+           – Hover: nền hồng nhạt + viền hồng
+           – .reacted: đã tương tác (đổi icon ❤️)
+           ══════════════════════════════════════ */
+        .reaction-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            padding: 3px 8px;
+            border-radius: 20px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all .2s;
+            border: 1px solid transparent;
+            background: transparent;
+        }
+
+        .reaction-btn:hover {
+            background: rgba(244, 63, 94, .1);
+            border-color: rgba(244, 63, 94, .3);
+        }
+
+        .reaction-btn.reacted {
+            background: rgba(244, 63, 94, .12);
+            border-color: rgba(244, 63, 94, .4);
+        }
+
+        /* ══════════════════════════════════════
+           TIMELINE ITEM ANIMATION
+           Mỗi phản hồi mới sẽ trượt lên từ dưới
+           (slideUp) để tạo cảm giác tươi mới.
+           ══════════════════════════════════════ */
+        .tl-item {
+            animation: slideUp .22s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(6px)
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0)
+            }
+        }
+
+        /* ══════════════════════════════════════
+           PULSE ANIMATION
+           Nhấp nháy nhẹ cho icon 🔴 cảnh báo
+           trong thẻ thống kê, thu hút sự chú ý.
+           ══════════════════════════════════════ */
+        .pulse {
+            animation: blink 2s infinite;
+        }
+
+        @keyframes blink {
+
+            0%,
+            100% {
+                opacity: 1
+            }
+
+            50% {
+                opacity: .4
+            }
+        }
+
+        /* ══════════════════════════════════════
+           INNER OVERLAY (Class Prompt)
+           Lớp phủ bên trong modal sinh viên,
+           xuất hiện khi GV gửi feedback lần đầu
+           cho một sinh viên → hỏi "dạy lớp nào?"
+           position: absolute → phủ lên toàn modal.
+           ══════════════════════════════════════ */
+        .inner-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            z-index: 20;
+            background: rgba(15, 23, 42, .72);
+            backdrop-filter: blur(3px);
+            align-items: center;
+            justify-content: center;
+            border-radius: inherit;
+        }
+
+        .inner-overlay.active {
+            display: flex;
+        }
+
+        /* ══════════════════════════════════════
+           BADGE "Mới"
+           Nhãn nhỏ màu tím gradient xuất hiện
+           trên thẻ sinh viên khi có cập nhật
+           trong vòng 30 phút gần đây.
+           ══════════════════════════════════════ */
+        .badge-new {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 10px;
+            color: white;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        }
+
+        /* ══════════════════════════════════════
+           NOTIFICATION DROPDOWN
+           Panel nổi xuất hiện khi click chuông.
+           – position: absolute so với wrapper relative
+           – min-width + max-height để không tràn màn hình
+           – hidden mặc định, .active → display: block
+           ══════════════════════════════════════ */
+        .notif-dropdown {
+            display: none;
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            width: 320px;
+            max-height: 420px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px -8px rgba(0, 0, 0, .15);
+            z-index: 200;
+        }
+
+        .notif-dropdown.active {
+            display: block;
+            animation: slideUp .18s ease-out;
+        }
+
+        /* ══════════════════════════════════════
+           REPORT TABLE — Bảng xuất báo cáo
+           .report-table: bảng chính với sticky header
+           .col-highlight: cột đang được chọn để copy
+           (click vào header cột để bôi xanh cả cột)
+           ══════════════════════════════════════ */
+        .report-table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 13px;
+        }
+
+        .report-table th {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 700;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+            transition: background .15s;
+        }
+
+        .report-table th:hover {
+            background: linear-gradient(135deg, #4338ca, #6d28d9);
+        }
+
+        .report-table td {
+            padding: 9px 12px;
+            border-bottom: 1px solid #f1f5f9;
+            vertical-align: top;
+            line-height: 1.5;
+        }
+
+        .report-table tr:hover td {
+            background: #f8faff;
+        }
+
+        .col-highlight {
+            background: #eef2ff !important;
+        }
+
+        .col-highlight-hd {
+            background: linear-gradient(135deg, #3730a3, #5b21b6) !important;
+        }
+
+        /* ══════════════════════════════════════
+           ROSTER AUTOCOMPLETE DROPDOWN
+           Dropdown gợi ý SV khi gõ trong modal
+           "Thêm SV". Hiện tối đa 8 kết quả.
+           ══════════════════════════════════════ */
+        .roster-dropdown {
+            position: absolute;
+            left: 0; right: 0;
+            top: 100%;
+            z-index: 60;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            box-shadow: 0 12px 32px -6px rgba(0,0,0,.12);
+            max-height: 260px;
+            overflow-y: auto;
+            display: none;
+        }
+        .roster-dropdown.active { display: block; animation: slideUp .15s ease-out; }
+        .roster-item {
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: background .12s;
+            border-bottom: 1px solid #f8fafc;
+        }
+        .roster-item:last-child { border-bottom: none; }
+        .roster-item:hover, .roster-item.selected { background: #eef2ff; }
+        .roster-item .ri-mssv { font-family: monospace; font-weight: 700; color: #4f46e5; font-size: 13px; }
+        .roster-item .ri-name { font-weight: 600; color: #1e293b; font-size: 13px; margin-left: 6px; }
+        .roster-item .ri-meta { font-size: 11px; color: #94a3b8; margin-top: 2px; }
