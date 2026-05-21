@@ -1064,56 +1064,161 @@ function renderAnalytics() {
     Object.values(State.charts).forEach(c => c?.destroy?.());
     State.charts = {};
 
-    const all = State.students;
-    const g = all.filter(s => (s.status || 'green') === 'green').length;
-    const y = all.filter(s => s.status === 'yellow').length;
-    const r = all.filter(s => s.status === 'red').length;
+    // ── Chuẩn bị dữ liệu ──
+    let userMajors = [];
+    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
+        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+    }
 
-    // Biểu đồ tròn (Donut): phân bổ 3 trạng thái
-    State.charts.donut = new Chart(document.getElementById('donutChart'), {
+    const all = State.students; // SV đã có feedback
+    const studentsWithFeedback = all.length;
+    const gAll = all.filter(s => (s.status || 'green') === 'green').length;
+    const yAll = all.filter(s => s.status === 'yellow').length;
+    const rAll = all.filter(s => s.status === 'red').length;
+
+    let totalRoster = 0;
+    if (rosterCache && rosterCache.length > 0) {
+        rosterCache.forEach(s => {
+            if (!s.nganh) return;
+            if (userMajors.length > 0 && !userMajors.includes(s.nganh)) return;
+            totalRoster++;
+        });
+    }
+    const studentsWithoutFeedback = Math.max(0, totalRoster - studentsWithFeedback);
+    const coveragePct = totalRoster > 0 ? ((studentsWithFeedback / totalRoster) * 100).toFixed(1) : '0.0';
+
+    // ── Cập nhật 4 thẻ KPI ──
+    const kpiTotal = document.getElementById('kpiTotal');
+    const kpiFb    = document.getElementById('kpiFeedback');
+    const kpiY     = document.getElementById('kpiYellow');
+    const kpiR     = document.getElementById('kpiRed');
+    if (kpiTotal) kpiTotal.textContent = totalRoster;
+    if (kpiFb)    kpiFb.textContent    = studentsWithFeedback;
+    if (kpiY)     kpiY.textContent     = yAll;
+    if (kpiR)     kpiR.textContent     = rAll;
+
+    // ── Plugin hiển thị số % ở giữa donut ──
+    const centerTextPlugin = {
+        id: 'centerText',
+        beforeDraw(chart) {
+            const { ctx, width, height } = chart;
+            const meta = chart.getDatasetMeta(0);
+            if (!meta || meta.data.length === 0) return;
+            const txt = chart.config.options.plugins.centerText?.text || '';
+            const sub = chart.config.options.plugins.centerText?.sub || '';
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            // Số chính
+            ctx.font = 'bold 28px Inter, sans-serif';
+            ctx.fillStyle = '#334155';
+            ctx.fillText(txt, width / 2, height / 2 - 8);
+            // Nhãn phụ
+            if (sub) {
+                ctx.font = '500 11px Inter, sans-serif';
+                ctx.fillStyle = '#94a3b8';
+                ctx.fillText(sub, width / 2, height / 2 + 16);
+            }
+            ctx.restore();
+        }
+    };
+
+    // ── 1. Donut: Độ bao phủ Feedback ──
+    State.charts.coverageDonut = new Chart(document.getElementById('coverageDonutChart'), {
         type: 'doughnut',
+        plugins: [centerTextPlugin],
         data: {
-            labels: ['🟢 Ổn định', '🟡 Theo dõi', '🔴 Cảnh báo'],
-            datasets: [{ data: [g, y, r], backgroundColor: ['#10b981', '#f59e0b', '#f43f5e'], borderWidth: 0, hoverOffset: 6 }]
-        },
-        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { family: 'Inter', size: 12 } } } } }
-    });
-
-    // Biểu đồ cột xếp chồng: nhóm SV theo lớp, chia màu theo trạng thái
-    const cls = {};
-    all.forEach(s => (s.lop || '').split(',').map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
-        .forEach(c => { if (!cls[c]) cls[c] = { g: 0, y: 0, r: 0 }; const st = s.status || 'green'; cls[c][st === 'green' ? 'g' : st === 'yellow' ? 'y' : 'r']++; }));
-    const labs = Object.keys(cls).sort();
-    State.charts.bar = new Chart(document.getElementById('barChart'), {
-        type: 'bar',
-        data: {
-            labels: labs, datasets: [
-                { label: 'Ổn định', data: labs.map(l => cls[l].g), backgroundColor: '#10b981' },
-                { label: 'Theo dõi', data: labs.map(l => cls[l].y), backgroundColor: '#f59e0b' },
-                { label: 'Cảnh báo', data: labs.map(l => cls[l].r), backgroundColor: '#f43f5e' },
-            ]
+            labels: ['Đã có Feedback', 'Chưa có Feedback'],
+            datasets: [{
+                data: [studentsWithFeedback, studentsWithoutFeedback],
+                backgroundColor: ['#6366f1', '#e2e8f0'],
+                borderWidth: 0, hoverOffset: 6, cutout: '68%'
+            }]
         },
         options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { labels: { font: { family: 'Inter', size: 11 } } } },
-            scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 } } }
+            plugins: {
+                centerText: { text: coveragePct + '%', sub: 'bao phủ' },
+                legend: { position: 'bottom', labels: { font: { family: 'Inter', size: 12 }, padding: 16, usePointStyle: true, pointStyleWidth: 10 } },
+                tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.raw} SV` } }
+            }
         }
     });
+    const covEl = document.getElementById('coveragePct');
+    if (covEl) covEl.textContent = `${studentsWithFeedback} / ${totalRoster} sinh viên`;
 
-    // Biểu đồ đường: xu hướng mock 6 tuần (dữ liệu cứng để demo)
-    State.charts.line = new Chart(document.getElementById('lineChart'), {
-        type: 'line',
+    // ── 2. Donut: Trạng thái SV đã có Feedback ──
+    const attentionPct = studentsWithFeedback > 0 ? (((yAll + rAll) / studentsWithFeedback) * 100).toFixed(1) : '0.0';
+    State.charts.donut = new Chart(document.getElementById('donutChart'), {
+        type: 'doughnut',
+        plugins: [centerTextPlugin],
         data: {
-            labels: ['Tuần 1', 'Tuần 2', 'Tuần 3', 'Tuần 4', 'Tuần 5', 'Tuần 6'],
+            labels: ['🟢 Ổn định', '🟡 Theo dõi', '🔴 Cảnh báo'],
+            datasets: [{
+                data: [gAll, yAll, rAll],
+                backgroundColor: ['#10b981', '#f59e0b', '#f43f5e'],
+                borderWidth: 0, hoverOffset: 6, cutout: '68%'
+            }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                centerText: { text: attentionPct + '%', sub: 'cần lưu ý' },
+                legend: { position: 'bottom', labels: { font: { family: 'Inter', size: 12 }, padding: 16, usePointStyle: true, pointStyleWidth: 10 } },
+                tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.raw} SV` } }
+            }
+        }
+    });
+    const sumEl = document.getElementById('statusSummary');
+    if (sumEl) sumEl.textContent = `${gAll} Ổn định · ${yAll} Theo dõi · ${rAll} Cảnh báo`;
+
+    // ── 3. Stacked Bar: Theo Chuyên ngành ──
+    const statusMap = {};
+    all.forEach(s => statusMap[s.mssv] = (s.status || 'green'));
+
+    const majorStats = {};
+    if (rosterCache && rosterCache.length > 0) {
+        rosterCache.forEach(s => {
+            if (!s.nganh) return;
+            if (userMajors.length > 0 && !userMajors.includes(s.nganh)) return;
+            if (!majorStats[s.nganh]) majorStats[s.nganh] = { g: 0, y: 0, r: 0 };
+            const st = statusMap[s.mssv] || 'green';
+            if (st === 'green') majorStats[s.nganh].g++;
+            else if (st === 'yellow') majorStats[s.nganh].y++;
+            else if (st === 'red') majorStats[s.nganh].r++;
+        });
+    }
+
+    const mLabels = Object.keys(majorStats).sort();
+    State.charts.majorBar = new Chart(document.getElementById('majorStackedBarChart'), {
+        type: 'bar',
+        data: {
+            labels: mLabels,
             datasets: [
-                { label: '🔴 Cảnh báo', data: [1, 1, 2, 2, 3, 3], borderColor: '#f43f5e', backgroundColor: 'rgba(244,63,94,.1)', fill: true, tension: .4 },
-                { label: '🟡 Theo dõi', data: [2, 3, 2, 4, 3, 3], borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,.1)', fill: true, tension: .4 },
+                { label: 'Ổn định', data: mLabels.map(l => majorStats[l].g), backgroundColor: '#10b981', borderRadius: 2 },
+                { label: 'Theo dõi', data: mLabels.map(l => majorStats[l].y), backgroundColor: '#f59e0b', borderRadius: 2 },
+                { label: 'Cảnh báo', data: mLabels.map(l => majorStats[l].r), backgroundColor: '#f43f5e', borderRadius: 2 },
             ]
         },
         options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { labels: { font: { family: 'Inter', size: 11 } } } },
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+            plugins: {
+                legend: { labels: { font: { family: 'Inter', size: 11 }, usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
+                tooltip: {
+                    callbacks: {
+                        afterBody: (items) => {
+                            const idx = items[0].dataIndex;
+                            const lbl = mLabels[idx];
+                            const total = majorStats[lbl].g + majorStats[lbl].y + majorStats[lbl].r;
+                            return `Tổng: ${total} SV`;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: { stacked: true, grid: { display: false }, ticks: { font: { family: 'Inter', size: 11, weight: '600' } } },
+                y: { stacked: true, beginAtZero: true, ticks: { stepSize: 5, font: { family: 'Inter', size: 11 } }, grid: { color: '#f1f5f9' } }
+            }
         }
     });
 }
