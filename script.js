@@ -194,8 +194,10 @@ async function login() {
     if (State.user.rawRole === 'Admin')
         document.getElementById('tabAdmin').classList.remove('hidden');
 
-    // Hiển thị bộ lọc Bộ môn nếu là Admin hoặc CTSV
-    if (['Admin', 'CTSV'].includes(State.user.rawRole)) {
+    // Hiển thị bộ lọc Bộ môn nếu là Admin hoặc CTSV, hoặc CNBM quản lý >= 2 ngành
+    const userMajors = State.user.major ? State.user.major.split(',').map(m => m.trim()).filter(Boolean) : [];
+    if (['Admin', 'CTSV'].includes(State.user.rawRole) || 
+        (State.user.rawRole === 'CNBM' && userMajors.length >= 2)) {
         const mf = document.getElementById('majorFilter');
         if (mf) mf.classList.remove('hidden');
     }
@@ -289,9 +291,10 @@ async function initDashboard() {
         };
     });
 
-    // Lọc sinh viên theo ngành (nếu user là GV/CNBM và có cấu hình ngành)
+    // Lọc sinh viên theo ngành (nếu user là GV/CNBM và có cấu hình ngành - có thể nhiều ngành cách nhau bởi dấu phẩy)
     if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
-        processedStudents = processedStudents.filter(s => s.nganh === State.user.major);
+        const userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+        processedStudents = processedStudents.filter(s => userMajors.includes(s.nganh));
     }
 
     State.students = processedStudents;
@@ -315,27 +318,36 @@ function updateStats() {
 // dùng Set để loại trùng, sort A-Z rồi đưa vào <select>
 function populateClassFilter() {
     const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
+    
+    // Nếu là CNBM/GV thì lấy danh sách ngành quản lý
+    let userMajors = [];
+    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
+        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+    }
+
     const set = new Set();
+    const processRoster = (r) => {
+        // Lọc theo mảng ngành nếu là CNBM/GV, ngược lại lọc theo majorF từ dropdown
+        if (userMajors.length > 0) {
+            if (!userMajors.includes(r.nganh)) return;
+        } else if (majorF !== 'all') {
+            if (r.nganh !== majorF) return;
+        }
+
+        (r.lop || '').split(',')
+        .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+        .forEach(c => {
+            // Xác định xem "English" có được cho phép không
+            const isEnglishAllowed = (userMajors.length > 0 && userMajors.includes('English')) || majorF === 'English' || majorF === 'all';
+            if (c.toUpperCase().startsWith('ENT') && !isEnglishAllowed) return;
+            set.add(c);
+        });
+    };
+
     if (rosterCache && rosterCache.length > 0) {
-        rosterCache.forEach(r => {
-            if (majorF !== 'all' && r.nganh !== majorF) return;
-            (r.lop || '').split(',')
-            .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
-            .forEach(c => {
-                if (c.toUpperCase().startsWith('ENT') && majorF !== 'English' && majorF !== 'all') return;
-                set.add(c);
-            });
-        });
+        rosterCache.forEach(processRoster);
     } else {
-        State.students.forEach(s => {
-            if (majorF !== 'all' && s.nganh !== majorF) return;
-            (s.lop || '').split(',')
-            .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
-            .forEach(c => {
-                if (c.toUpperCase().startsWith('ENT') && majorF !== 'English' && majorF !== 'all') return;
-                set.add(c);
-            });
-        });
+        State.students.forEach(processRoster);
     }
 
     const sel = document.getElementById('classFilter');
@@ -357,15 +369,25 @@ function onMajorChange() {
 
 // Lọc bộ môn dựa vào thuộc tính nganh lấy từ student_roster
 function populateMajorFilter() {
+    let userMajors = [];
+    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
+        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+    }
+
     const set = new Set();
+    const processRoster = (r) => {
+        if (!r.nganh) return;
+        if (userMajors.length > 0) {
+            if (userMajors.includes(r.nganh)) set.add(r.nganh);
+        } else {
+            set.add(r.nganh);
+        }
+    };
+
     if (rosterCache && rosterCache.length > 0) {
-        rosterCache.forEach(r => {
-            if (r.nganh) set.add(r.nganh);
-        });
+        rosterCache.forEach(processRoster);
     } else {
-        State.students.forEach(s => {
-            if (s.nganh) set.add(s.nganh);
-        });
+        State.students.forEach(processRoster);
     }
 
     const sel = document.getElementById('majorFilter');
@@ -817,9 +839,10 @@ function onRosterSearch() {
     let results = rosterCache
         .filter(r => r.mssv.toLowerCase().includes(q) || r.ho_ten.toLowerCase().includes(q));
 
-    // Chỉ cho phép tìm SV trong cùng ngành nếu user là GV/CNBM và có khai báo major
+    // Chỉ cho phép tìm SV trong cùng ngành nếu user là GV/CNBM và có khai báo major (hỗ trợ nhiều ngành)
     if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
-        results = results.filter(r => r.nganh === State.user.major);
+        const userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+        results = results.filter(r => userMajors.includes(r.nganh));
     }
 
     // BẢO MẬT: Giảng viên chỉ được tìm sinh viên thuộc lớp mình dạy (dựa vào roster giang_vien)
