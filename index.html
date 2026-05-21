@@ -218,7 +218,7 @@
                         class="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-xl focus:border-indigo-400 focus:outline-none"
                         oninput="renderStudents()">
                     <!-- Dropdown lọc theo bộ môn (hiển thị động cho Admin/CTSV) -->
-                    <select id="majorFilter" onchange="renderStudents()"
+                    <select id="majorFilter" onchange="onMajorChange()"
                         class="hidden px-3 py-2 text-sm border border-slate-200 rounded-xl focus:border-indigo-400 focus:outline-none bg-white">
                         <option value="all">📚 Tất cả bộ môn</option>
                     </select>
