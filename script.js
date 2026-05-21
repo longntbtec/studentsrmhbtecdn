@@ -314,27 +314,59 @@ function updateStats() {
 // Lấy tất cả tên lớp từ DB.students (SV có thể thuộc nhiều lớp),
 // dùng Set để loại trùng, sort A-Z rồi đưa vào <select>
 function populateClassFilter() {
+    const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
     const set = new Set();
-    State.students.forEach(s => (s.lop || '').split(',')
-        .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
-        .forEach(c => set.add(c)));
+    if (rosterCache && rosterCache.length > 0) {
+        rosterCache.forEach(r => {
+            if (majorF !== 'all' && r.nganh !== majorF) return;
+            (r.lop || '').split(',')
+            .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+            .forEach(c => {
+                if (c.toUpperCase().startsWith('ENT') && majorF !== 'English' && majorF !== 'all') return;
+                set.add(c);
+            });
+        });
+    } else {
+        State.students.forEach(s => {
+            if (majorF !== 'all' && s.nganh !== majorF) return;
+            (s.lop || '').split(',')
+            .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+            .forEach(c => {
+                if (c.toUpperCase().startsWith('ENT') && majorF !== 'English' && majorF !== 'all') return;
+                set.add(c);
+            });
+        });
+    }
 
     const sel = document.getElementById('classFilter');
     const cur = sel.value; // giữ lại giá trị đang chọn
     sel.innerHTML = '<option value="all">🏫 Tất cả lớp</option>';
     [...set].sort().forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
-    if (cur !== 'all') sel.value = cur; // restore selection
+    
+    if (cur !== 'all' && set.has(cur)) {
+        sel.value = cur;
+    } else {
+        sel.value = 'all';
+    }
 }
 
-// Tạo cấu trúc tương tự populateClassFilter để lọc bộ môn (IT, MK, BA...)
+function onMajorChange() {
+    populateClassFilter();
+    renderStudents();
+}
+
+// Lọc bộ môn dựa vào thuộc tính nganh lấy từ student_roster
 function populateMajorFilter() {
     const set = new Set();
-    State.students.forEach(s => (s.lop || '').split(',')
-        .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
-        .forEach(c => {
-            const match = c.match(/^[a-zA-Z]+/);
-            if (match) set.add(match[0].toUpperCase());
-        }));
+    if (rosterCache && rosterCache.length > 0) {
+        rosterCache.forEach(r => {
+            if (r.nganh) set.add(r.nganh);
+        });
+    } else {
+        State.students.forEach(s => {
+            if (s.nganh) set.add(s.nganh);
+        });
+    }
 
     const sel = document.getElementById('majorFilter');
     if (!sel) return;
@@ -375,7 +407,7 @@ function renderStudents() {
     });
 
     // BẢO MẬT: Giảng viên chỉ được xem sinh viên thuộc lớp mình dạy (dựa vào roster giang_vien)
-    if (State.user.role === 'GV') {
+    if (State.user.rawRole === 'GV') {
         const ucode = State.user.code.toLowerCase();
         const uname = State.user.name.toLowerCase();
         list = list.filter(s => {
@@ -394,8 +426,7 @@ function renderStudents() {
         (s.lop || '').split(',').map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).includes(classF));
 
     // Lọc theo bộ môn
-    if (majorF !== 'all') list = list.filter(s =>
-        (s.lop || '').split(',').some(c => c.trim().toUpperCase().startsWith(majorF)));
+    if (majorF !== 'all') list = list.filter(s => s.nganh === majorF);
 
     // Lọc theo từ khóa
     if (search) list = list.filter(s =>
@@ -791,6 +822,17 @@ function onRosterSearch() {
         results = results.filter(r => r.nganh === State.user.major);
     }
 
+    // BẢO MẬT: Giảng viên chỉ được tìm sinh viên thuộc lớp mình dạy (dựa vào roster giang_vien)
+    if (State.user.rawRole === 'GV') {
+        const ucode = State.user.code.toLowerCase();
+        const uname = State.user.name.toLowerCase();
+        results = results.filter(r => {
+            if (!r.giang_vien) return false;
+            const gvStr = r.giang_vien.toLowerCase();
+            return gvStr.includes(ucode) || gvStr.includes(uname);
+        });
+    }
+
     results = results.slice(0, 8);
 
     if (results.length === 0) {
@@ -878,6 +920,16 @@ async function createStudent() {
         alert('Vui lòng chọn sinh viên từ danh sách trước khi thêm.');
         document.getElementById('rosterSearchInput').focus();
         return;
+    }
+
+    if (State.user.rawRole === 'GV') {
+        const ucode = State.user.code.toLowerCase();
+        const uname = State.user.name.toLowerCase();
+        const gvStr = (State.rosterSelected.giang_vien || '').toLowerCase();
+        if (!gvStr.includes(ucode) && !gvStr.includes(uname)) {
+            alert('Bạn chỉ có thể thêm sinh viên thuộc lớp bạn đang giảng dạy!');
+            return;
+        }
     }
 
     const feedback = document.getElementById('initialFeedback').value.trim();
