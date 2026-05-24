@@ -56,10 +56,18 @@
             <!-- Form đăng nhập -->
             <div class="bg-white rounded-2xl shadow-xl border border-slate-100 p-6">
                 <label class="block text-sm font-semibold text-slate-700 mb-2">Mã truy cập</label>
-                <!-- type="text" nhưng được mask bằng hàm JavaScript (Delay mask) -->
-                <input type="text" id="accessCode" placeholder="Nhập mã..."
-                    class="w-full px-4 py-3 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none font-mono mb-3 transition tracking-widest"
-                    onkeypress="if(event.key==='Enter') login()" oninput="handleAccessCodeInput(event)">
+                <!-- Dùng type="password" chuẩn để trình duyệt tự động che ký tự và tự động tắt bộ gõ tiếng Việt -->
+                <div class="relative mb-3">
+                    <input type="password" id="accessCode" placeholder="Nhập mã..."
+                        class="w-full px-4 py-3 pr-12 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none font-mono transition tracking-widest"
+                        onkeypress="if(event.key==='Enter') login()">
+                    <button type="button" onclick="togglePassword()" class="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-indigo-600 focus:outline-none transition">
+                        <svg id="eyeIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                    </button>
+                </div>
                 <button onclick="login()"
                     class="w-full py-3 bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl font-bold text-sm hover:shadow-lg hover:shadow-indigo-200 transition hover:-translate-y-0.5">
                     Đăng nhập
@@ -296,7 +304,8 @@
                 <!-- Donut 2: Phân bổ trạng thái -->
                 <div class="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
                     <div class="flex items-center gap-2 mb-1">
-                        <span class="w-7 h-7 bg-emerald-50 rounded-lg flex items-center justify-center text-sm">📊</span>
+                        <span
+                            class="w-7 h-7 bg-emerald-50 rounded-lg flex items-center justify-center text-sm">📊</span>
                         <h3 class="font-bold text-slate-700 text-sm">Trạng thái SV đã có Feedback</h3>
                     </div>
                     <p class="text-xs text-slate-400 mb-4 ml-9">Phân bổ Xanh / Vàng / Đỏ trong nhóm đã ghi nhận</p>
@@ -313,7 +322,8 @@
                     <span class="w-7 h-7 bg-violet-50 rounded-lg flex items-center justify-center text-sm">🏢</span>
                     <h3 class="font-bold text-slate-700 text-sm">Phân bổ trạng thái theo Chuyên ngành</h3>
                 </div>
-                <p class="text-xs text-slate-400 mb-4 ml-9">Tổng SV mỗi ngành · SV chưa có feedback mặc định là Ổn định (Xanh)</p>
+                <p class="text-xs text-slate-400 mb-4 ml-9">Tổng SV mỗi ngành · SV chưa có feedback mặc định là Ổn định
+                    (Xanh)</p>
                 <div style="height:320px;"><canvas id="majorStackedBarChart"></canvas></div>
             </div>
 
@@ -482,14 +492,17 @@
 
                 <!-- ═══ Tìm từ danh sách SV kỳ SU26 (autocomplete roster) ═══ -->
                 <div id="rosterSearchSection">
-                    <label class="text-xs font-bold text-slate-600 mb-1 block">🔍 Tìm sinh viên trong danh sách kỳ SU26</label>
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">🔍 Tìm sinh viên trong danh sách kỳ
+                        SU26</label>
                     <div class="relative">
-                        <input type="text" id="rosterSearchInput" placeholder="Gõ MSSV hoặc Họ tên... (VD: BD00555 hoặc Nguyễn)"
+                        <input type="text" id="rosterSearchInput"
+                            placeholder="Gõ MSSV hoặc Họ tên... (VD: BD00555 hoặc Nguyễn)"
                             class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none"
                             oninput="onRosterSearch()" autocomplete="off">
                         <div id="rosterDropdown" class="roster-dropdown"></div>
                     </div>
-                    <p class="text-[10px] text-slate-400 mt-1">💡 Gõ ít nhất 2 ký tự để tìm. Chọn SV từ danh sách gợi ý.</p>
+                    <p class="text-[10px] text-slate-400 mt-1">💡 Gõ ít nhất 2 ký tự để tìm. Chọn SV từ danh sách gợi ý.
+                    </p>
                 </div>
 
                 <!-- Thông tin SV đã chọn -->
@@ -499,7 +512,8 @@
                             <p class="text-sm font-bold text-indigo-900" id="selectedName">—</p>
                             <p class="text-xs text-indigo-600 font-mono" id="selectedMeta">—</p>
                         </div>
-                        <button onclick="clearRosterSelection()" class="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">✕ Bỏ chọn</button>
+                        <button onclick="clearRosterSelection()"
+                            class="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">✕ Bỏ chọn</button>
                     </div>
                 </div>
 
@@ -508,20 +522,24 @@
                     <label class="text-xs font-bold text-slate-600 mb-1 block">Mã giảng viên phụ trách lớp</label>
                     <input type="text" id="newAuthorCode" placeholder="VD: anhnv123"
                         class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none font-mono transition-colors">
-                    <p id="authorCodeHelper" class="text-[10px] text-slate-500 mt-1">Mã GV phụ trách lớp (GV không được sửa trường này).</p>
+                    <p id="authorCodeHelper" class="text-[10px] text-slate-500 mt-1">Mã GV phụ trách lớp (GV không được
+                        sửa trường này).</p>
                 </div>
 
                 <!-- Feedback ban đầu (Bắt buộc) -->
                 <div>
-                    <label class="text-xs font-bold text-slate-600 mb-1 block">Feedback / Lý do thêm vào danh sách chăm sóc *</label>
-                    <textarea id="initialFeedback" rows="3" placeholder="Ghi chú tình trạng hiện tại của sinh viên... (Ví dụ: Vắng nhiều, cần liên hệ phụ huynh)"
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">Feedback / Lý do thêm vào danh sách chăm
+                        sóc *</label>
+                    <textarea id="initialFeedback" rows="3"
+                        placeholder="Ghi chú tình trạng hiện tại của sinh viên... (Ví dụ: Vắng nhiều, cần liên hệ phụ huynh)"
                         class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none resize-none"></textarea>
                 </div>
 
                 <!-- Trạng thái ban đầu (Mặc định: Xanh) -->
                 <div>
                     <label class="text-xs font-bold text-slate-600 mb-1 block">Trạng thái ban đầu</label>
-                    <select id="initialStatus" class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none bg-white">
+                    <select id="initialStatus"
+                        class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none bg-white">
                         <option value="green">🟢 Ổn định (Xanh)</option>
                         <option value="yellow">🟡 Cần theo dõi (Vàng)</option>
                         <option value="red">🔴 Cảnh báo (Đỏ)</option>
