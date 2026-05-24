@@ -421,11 +421,18 @@ function renderStudents() {
     const classF = document.getElementById('classFilter').value;
     const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
 
-    // Sort theo mức độ nghiêm trọng (red = 0 → cần chú ý nhất)
+    const getLatestTime = (s) => {
+        const t1 = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+        const t2 = s.latestFbCreatedAt ? new Date(s.latestFbCreatedAt).getTime() : 0;
+        return Math.max(t1, t2);
+    };
+
+    // Sort: Ưu tiên thẻ Đỏ lên đầu, sau đó mới sắp xếp theo thay đổi mới nhất
     let list = [...State.students].sort((a, b) => {
-        const o = { red: 0, yellow: 1, green: 2 };
-        const d = (o[a.status || 'green']) - (o[b.status || 'green']);
-        return d !== 0 ? d : new Date(b.updated_at) - new Date(a.updated_at);
+        const isRedA = a.status === 'red' ? 1 : 0;
+        const isRedB = b.status === 'red' ? 1 : 0;
+        if (isRedA !== isRedB) return isRedB - isRedA;
+        return getLatestTime(b) - getLatestTime(a);
     });
 
     // BẢO MẬT: Giảng viên chỉ được xem sinh viên thuộc lớp mình dạy (dựa vào roster giang_vien)
@@ -471,8 +478,15 @@ function studentCard(s) {
     const label = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[st];
     const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[st];
 
-    // Badge "Mới" xuất hiện nếu updated_at trong vòng 30 phút
-    const recent = (Date.now() - new Date(s.updated_at)) < 30 * 60 * 1000;
+    const getLatestTime = (st) => {
+        const t1 = st.updated_at ? new Date(st.updated_at).getTime() : 0;
+        const t2 = st.latestFbCreatedAt ? new Date(st.latestFbCreatedAt).getTime() : 0;
+        return Math.max(t1, t2);
+    };
+    const latestTime = getLatestTime(s);
+
+    // Badge "Mới" xuất hiện nếu có thay đổi trong vòng 30 phút
+    const recent = (Date.now() - latestTime) < 30 * 60 * 1000;
 
     // Lấy feedback gần nhất để preview từ trường đã map sẵn ở initDashboard
     const latestFbText = s.latestFbContent;
@@ -504,7 +518,7 @@ function studentCard(s) {
             <!-- Badge trạng thái + thời gian cập nhật -->
             <div class="flex items-center gap-2 shrink-0">
                 <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${badge}">${emoji} ${label}</span>
-                <span class="text-xs text-slate-300 hidden sm:inline">⏱️ ${timeAgo(s.updated_at)}</span>
+                <span class="text-xs text-slate-300 hidden sm:inline">⏱️ ${timeAgo(latestTime)}</span>
             </div>
         </div>
     </div>`;
@@ -1329,34 +1343,62 @@ function toggleNotif() {
 function renderNotifPanel() {
     const container = document.getElementById('notifList');
 
-    // Lấy các SV đang cảnh báo đỏ, sắp xếp mới nhất trước
-    const redStudents = State.students
-        .filter(s => s.status === 'red')
-        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+    // Hàm lấy thời gian cập nhật mới nhất (so sánh updated_at của sinh viên và created_at của feedback)
+    const getLatestTime = (s) => {
+        const t1 = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+        const t2 = s.latestFbCreatedAt ? new Date(s.latestFbCreatedAt).getTime() : 0;
+        return Math.max(t1, t2);
+    };
 
-    if (!redStudents.length) {
+    // Lấy các SV đang cảnh báo đỏ, vàng, hoặc vừa được cập nhật lần đầu (có 1 feedback)
+    let targetStudents = State.students
+        .filter(s => s.status === 'red' || s.status === 'yellow' || (s.feedbacks && s.feedbacks.length === 1))
+        .sort((a, b) => getLatestTime(b) - getLatestTime(a));
+
+    // Phân quyền: Giảng viên chỉ xem được thông báo của sinh viên thuộc lớp mình dạy
+    if (State.user.rawRole === 'GV') {
+        const ucode = State.user.code.toLowerCase();
+        const uname = State.user.name.toLowerCase();
+        targetStudents = targetStudents.filter(s => {
+            if (!s.giang_vien) return false;
+            const gvStr = s.giang_vien.toLowerCase();
+            return gvStr.includes(ucode) || gvStr.includes(uname);
+        });
+    }
+
+    if (!targetStudents.length) {
         container.innerHTML = `
         <div class="px-4 py-8 text-center">
             <div class="text-3xl mb-2">✅</div>
-            <p class="text-sm text-slate-500">Không có cảnh báo nào</p>
+            <p class="text-sm text-slate-500">Không có thông báo nào</p>
         </div>`;
         return;
     }
 
-    container.innerHTML = redStudents.map(s => {
+    container.innerHTML = targetStudents.map(s => {
         // Lấy feedback gần nhất của SV này
         const text = s.latestFbContent;
         const preview = text
             ? (text.length > 55 ? text.slice(0, 55) + '…' : text)
             : 'Chưa có phản hồi';
+
+        let icon = '🔴', bgClass = 'bg-rose-100', textClass = 'text-rose-400', hoverClass = 'hover:bg-rose-50';
+        if (s.status === 'yellow') {
+            icon = '🟡'; bgClass = 'bg-amber-100'; textClass = 'text-amber-500'; hoverClass = 'hover:bg-amber-50';
+        } else if (s.status === 'green') {
+            icon = '🟢'; bgClass = 'bg-emerald-100'; textClass = 'text-emerald-500'; hoverClass = 'hover:bg-emerald-50';
+        }
+
+        const latestTime = getLatestTime(s);
+
         return `
-        <div onclick="notifGoTo(${s.id})" class="flex items-start gap-3 px-4 py-3 hover:bg-rose-50 cursor-pointer transition border-b border-slate-50 last:border-0">
-            <div class="w-8 h-8 bg-rose-100 rounded-full flex items-center justify-center text-sm shrink-0 mt-0.5">🔴</div>
+        <div onclick="notifGoTo(${s.id})" class="flex items-start gap-3 px-4 py-3 ${hoverClass} cursor-pointer transition border-b border-slate-50 last:border-0">
+            <div class="w-8 h-8 ${bgClass} rounded-full flex items-center justify-center text-sm shrink-0 mt-0.5">${icon}</div>
             <div class="min-w-0">
                 <p class="text-sm font-bold text-slate-800">${s.ho_ten}</p>
                 <p class="text-xs text-slate-500 font-mono">${s.mssv} · ${s.lop || 'N/A'}</p>
                 <p class="text-xs text-slate-400 mt-0.5 truncate">💬 ${preview}</p>
-                <p class="text-xs text-rose-400 mt-0.5">⏱️ ${timeAgo(s.updated_at)}</p>
+                <p class="text-xs ${textClass} mt-0.5">⏱️ ${timeAgo(latestTime)}</p>
             </div>
         </div>`;
     }).join('');
