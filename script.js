@@ -95,55 +95,21 @@ const State = {
 // ══════════════════════════════════════════════════════════════════
 async function quickLogin(code) { document.getElementById('accessCode').value = code; await login(); }
 
-let rawAccessCode = "";
-let maskTimeout = null;
-
-// Hàm xử lý việc hiển thị từng ký tự mật khẩu một lát rồi mới ẩn đi
-function handleAccessCodeInput(event) {
-    const input = event.target;
-    const value = input.value;
-    
-    if (value === "") {
-        rawAccessCode = "";
-        input.value = "";
-        return;
-    }
-
-    if (!value.includes('•')) {
-        rawAccessCode = value;
+function togglePassword() {
+    const input = document.getElementById('accessCode');
+    const icon = document.getElementById('eyeIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />`;
     } else {
-        if (value.length > rawAccessCode.length) {
-            const addedChar = value.slice(-1);
-            rawAccessCode = rawAccessCode.slice(0, value.length - 1) + addedChar;
-        } else if (value.length < rawAccessCode.length) {
-            rawAccessCode = rawAccessCode.slice(0, value.length);
-        }
+        input.type = 'password';
+        icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />`;
     }
-
-    let masked = "";
-    for (let i = 0; i < rawAccessCode.length; i++) {
-        if (i === rawAccessCode.length - 1) {
-            masked += rawAccessCode[i];
-        } else {
-            masked += "•";
-        }
-    }
-    input.value = masked;
-    
-    if (maskTimeout) clearTimeout(maskTimeout);
-    
-    maskTimeout = setTimeout(() => {
-        let allMasked = "";
-        for (let i = 0; i < rawAccessCode.length; i++) {
-            allMasked += "•";
-        }
-        input.value = allMasked;
-    }, 500);
 }
 
 async function login() {
     const inputField = document.getElementById('accessCode');
-    const code = (inputField.value.includes('•') ? rawAccessCode : inputField.value).trim();
+    const code = inputField.value.trim();
     if (!code) return; // Nếu trống thì bỏ qua
 
     // Vô hiệu hóa nút và hiện trạng thái loading thay đổi text
@@ -196,7 +162,7 @@ async function login() {
 
     // Hiển thị bộ lọc Bộ môn nếu là Admin hoặc CTSV, hoặc CNBM quản lý >= 2 ngành
     const userMajors = State.user.major ? State.user.major.split(',').map(m => m.trim()).filter(Boolean) : [];
-    if (['Admin', 'CTSV'].includes(State.user.rawRole) || 
+    if (['Admin', 'CTSV'].includes(State.user.rawRole) ||
         (State.user.rawRole === 'CNBM' && userMajors.length >= 2)) {
         const mf = document.getElementById('majorFilter');
         if (mf) mf.classList.remove('hidden');
@@ -266,13 +232,13 @@ async function initDashboard() {
         let classSet = new Set();
         let monSet = new Set();
         let gvSet = new Set();
-        rosterEntries.forEach(r => { 
-            if (r.lop) classSet.add(r.lop); 
-            if (r.ma_mon) monSet.add(r.ma_mon); 
+        rosterEntries.forEach(r => {
+            if (r.lop) classSet.add(r.lop);
+            if (r.ma_mon) monSet.add(r.ma_mon);
             if (r.giang_vien) gvSet.add(r.giang_vien);
         });
         (s.student_classes || []).forEach(c => { if (c.class_name) classSet.add(c.class_name); });
-        
+
         const classStr = Array.from(classSet).join(', ');
         const monStr = Array.from(monSet).join(', ');
         const gvStr = Array.from(gvSet).join(', ');
@@ -318,7 +284,7 @@ function updateStats() {
 // dùng Set để loại trùng, sort A-Z rồi đưa vào <select>
 function populateClassFilter() {
     const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
-    
+
     // Nếu là CNBM/GV thì lấy danh sách ngành quản lý
     let userMajors = [];
     if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
@@ -335,13 +301,13 @@ function populateClassFilter() {
         }
 
         (r.lop || '').split(',')
-        .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
-        .forEach(c => {
-            // Xác định xem "English" có được cho phép không
-            const isEnglishAllowed = (userMajors.length > 0 && userMajors.includes('English')) || majorF === 'English' || majorF === 'all';
-            if (c.toUpperCase().startsWith('ENT') && !isEnglishAllowed) return;
-            set.add(c);
-        });
+            .map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).filter(Boolean)
+            .forEach(c => {
+                // Xác định xem "English" có được cho phép không
+                const isEnglishAllowed = (userMajors.length > 0 && userMajors.includes('English')) || majorF === 'English' || majorF === 'all';
+                if (c.toUpperCase().startsWith('ENT') && !isEnglishAllowed) return;
+                set.add(c);
+            });
     };
 
     if (rosterCache && rosterCache.length > 0) {
@@ -354,7 +320,7 @@ function populateClassFilter() {
     const cur = sel.value; // giữ lại giá trị đang chọn
     sel.innerHTML = '<option value="all">🏫 Tất cả lớp</option>';
     [...set].sort().forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; sel.appendChild(o); });
-    
+
     if (cur !== 'all' && set.has(cur)) {
         sel.value = cur;
     } else {
@@ -1103,13 +1069,13 @@ function renderAnalytics() {
 
     // ── Cập nhật 4 thẻ KPI ──
     const kpiTotal = document.getElementById('kpiTotal');
-    const kpiFb    = document.getElementById('kpiFeedback');
-    const kpiY     = document.getElementById('kpiYellow');
-    const kpiR     = document.getElementById('kpiRed');
+    const kpiFb = document.getElementById('kpiFeedback');
+    const kpiY = document.getElementById('kpiYellow');
+    const kpiR = document.getElementById('kpiRed');
     if (kpiTotal) kpiTotal.textContent = totalRoster;
-    if (kpiFb)    kpiFb.textContent    = studentsWithFeedback;
-    if (kpiY)     kpiY.textContent     = yAll;
-    if (kpiR)     kpiR.textContent     = rAll;
+    if (kpiFb) kpiFb.textContent = studentsWithFeedback;
+    if (kpiY) kpiY.textContent = yAll;
+    if (kpiR) kpiR.textContent = rAll;
 
     // ── Plugin hiển thị số % ở giữa donut ──
     const centerTextPlugin = {
