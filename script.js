@@ -268,7 +268,10 @@ async function initDashboard() {
     // Lọc sinh viên theo ngành (nếu user là GV/CNBM và có cấu hình ngành - có thể nhiều ngành cách nhau bởi dấu phẩy)
     if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
         const userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
-        processedStudents = processedStudents.filter(s => userMajors.includes(s.nganh));
+        processedStudents = processedStudents.filter(s => {
+            const sMajors = (s.nganh || '').split(',').map(m => m.trim()).filter(Boolean);
+            return sMajors.some(m => userMajors.includes(m));
+        });
     }
 
     State.students = processedStudents;
