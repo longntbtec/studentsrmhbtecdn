@@ -39,6 +39,10 @@ try {
 //  – hoursAgo(n) : n giờ trước từ hiện tại
 //  – minsAgo(n)  : n phút trước từ hiện tại
 // ══════════════════════════════════════════════════════════════════
+const removeAccents = (str) => {
+    if (!str) return '';
+    return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').toLowerCase();
+};
 // [ĐÃ XÓA MOCK DATABASE] - App đang chuyển sang dùng Supabase.
 // Các đoạn code dưới dùng DB.* sẽ được viết lại trong các bước tiếp theo.
 // ══════════════════════════════════════════════════════════════════
@@ -436,8 +440,12 @@ function renderStudents() {
     });
 
     // Lọc theo từ khóa
-    if (search) list = list.filter(s =>
-        s.mssv.toLowerCase().includes(search) || s.ho_ten.toLowerCase().includes(search));
+    if (search) {
+        const q = removeAccents(search);
+        list = list.filter(s =>
+            removeAccents(s.mssv).includes(q) || removeAccents(s.ho_ten).includes(q)
+        );
+    }
 
     if (!list.length) {
         container.innerHTML = '<div class="text-center text-slate-400 py-16 text-sm">Không tìm thấy sinh viên nào</div>';
@@ -822,9 +830,9 @@ function onRosterSearch() {
         return;
     }
 
-    const q = query.toLowerCase();
+    const q = removeAccents(query);
     let results = rosterCache
-        .filter(r => r.mssv.toLowerCase().includes(q) || r.ho_ten.toLowerCase().includes(q));
+        .filter(r => removeAccents(r.mssv).includes(q) || removeAccents(r.ho_ten).includes(q));
 
     // Chỉ cho phép tìm SV trong cùng ngành nếu user là GV/CNBM và có khai báo major (hỗ trợ nhiều ngành)
     if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
