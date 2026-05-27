@@ -139,11 +139,18 @@ async function login() {
 
     // Lưu thông tin user đăng nhập vào State
     // Chuyển đổi tên trường raw_role (DB) thành rawRole (Client) cho khớp các lệnh if-else cũ
+    // Đảm bảo chữ cái đầu luôn viết hoa (vd: admin -> Admin, ctsv -> CTSV) để không bị lỗi phân quyền case-sensitive
+    let rRole = acc.raw_role || '';
+    if (rRole.toLowerCase() === 'admin') rRole = 'Admin';
+    else if (rRole.toLowerCase() === 'ctsv') rRole = 'CTSV';
+    else if (rRole.toLowerCase() === 'cnbm') rRole = 'CNBM';
+    else if (rRole.toLowerCase() === 'gv') rRole = 'GV';
+
     State.user = {
         code: acc.code,
         name: acc.name,
         role: acc.role,
-        rawRole: acc.raw_role,
+        rawRole: rRole,
         major: acc.major
     };
 
@@ -168,16 +175,13 @@ async function login() {
         if (mf) mf.classList.remove('hidden');
     }
 
-    // Nút đổi trạng thái trong modal chỉ hiện với GV / CTSV / CNBM
-    if (['GV', 'CTSV', 'CNBM'].includes(State.user.rawRole))
+    // Nút đổi trạng thái trong modal chỉ hiện với Admin / GV / CTSV / CNBM
+    if (['Admin', 'GV', 'CTSV', 'CNBM'].includes(State.user.rawRole))
         document.getElementById('statusBtns').style.display = 'flex';
     else
         document.getElementById('statusBtns').style.display = 'none';
 
     initDashboard();
-
-    // Hiện badge thông báo (mock: luôn = 2 sau đăng nhập)
-    document.getElementById('notifBadge').classList.remove('hidden');
 }
 
 function logout() {
@@ -269,6 +273,7 @@ async function initDashboard() {
     populateClassFilter();
     populateMajorFilter();
     renderStudents();
+    updateNotifBadge();
 }
 
 // Đếm số SV theo từng trạng thái và cập nhật vào 4 thẻ stat
@@ -293,11 +298,12 @@ function populateClassFilter() {
 
     const set = new Set();
     const processRoster = (r) => {
+        const sMajors = (r.nganh || '').split(',').map(m => m.trim()).filter(Boolean);
         // Lọc theo mảng ngành nếu là CNBM/GV, ngược lại lọc theo majorF từ dropdown
         if (userMajors.length > 0) {
-            if (!userMajors.includes(r.nganh)) return;
+            if (!sMajors.some(m => userMajors.includes(m))) return;
         } else if (majorF !== 'all') {
-            if (r.nganh !== majorF) return;
+            if (!sMajors.includes(majorF)) return;
         }
 
         (r.lop || '').split(',')
@@ -343,11 +349,14 @@ function populateMajorFilter() {
     const set = new Set();
     const processRoster = (r) => {
         if (!r.nganh) return;
-        if (userMajors.length > 0) {
-            if (userMajors.includes(r.nganh)) set.add(r.nganh);
-        } else {
-            set.add(r.nganh);
-        }
+        const sMajors = r.nganh.split(',').map(m => m.trim()).filter(Boolean);
+        sMajors.forEach(m => {
+            if (userMajors.length > 0) {
+                if (userMajors.includes(m)) set.add(m);
+            } else {
+                set.add(m);
+            }
+        });
     };
 
     if (rosterCache && rosterCache.length > 0) {
@@ -421,7 +430,10 @@ function renderStudents() {
         (s.lop || '').split(',').map(c => c.trim().replace(/[{}\[\]()]/g, '').trim()).includes(classF));
 
     // Lọc theo bộ môn
-    if (majorF !== 'all') list = list.filter(s => s.nganh === majorF);
+    if (majorF !== 'all') list = list.filter(s => {
+        const sMajors = (s.nganh || '').split(',').map(m => m.trim()).filter(Boolean);
+        return sMajors.includes(majorF);
+    });
 
     // Lọc theo từ khóa
     if (search) list = list.filter(s =>
@@ -757,12 +769,7 @@ async function updateStatus(newSt) {
     document.getElementById('modalMeta').textContent =
         `${s.mssv} · ${s.lop || 'N/A'} · ${emoji} ${text}`;
 
-    // Tăng badge nếu lần đầu chuyển sang trạng thái đỏ
-    if (newSt === 'red' && old !== 'red') {
-        const badge = document.getElementById('notifBadge');
-        badge.classList.remove('hidden');
-        badge.textContent = (parseInt(badge.textContent) || 0) + 1;
-    }
+    // Badge count will be updated dynamically via initDashboard() below
 
     await renderTimeline(State.currentStudentId);
     await initDashboard();
@@ -822,7 +829,10 @@ function onRosterSearch() {
     // Chỉ cho phép tìm SV trong cùng ngành nếu user là GV/CNBM và có khai báo major (hỗ trợ nhiều ngành)
     if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
         const userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
-        results = results.filter(r => userMajors.includes(r.nganh));
+        results = results.filter(r => {
+            const sMajors = (r.nganh || '').split(',').map(m => m.trim()).filter(Boolean);
+            return sMajors.some(m => userMajors.includes(m));
+        });
     }
 
     // BẢO MẬT: Giảng viên chỉ được tìm sinh viên thuộc lớp mình dạy (dựa vào roster giang_vien)
@@ -896,7 +906,7 @@ async function openAddStudentModal() {
     } else {
         authorInput.readOnly = false;
         authorInput.classList.remove('bg-slate-50', 'text-slate-500', 'cursor-not-allowed');
-        document.getElementById('authorCodeHelper').textContent = 'Có thể sửa nếu bạn (CTSV/CNBM) nhập hộ GV.';
+        document.getElementById('authorCodeHelper').textContent = 'Có thể sửa nếu bạn (Admin/CTSV/CNBM) nhập hộ GV.';
     }
 
     document.getElementById('initialFeedback').value = '';
@@ -1060,7 +1070,8 @@ function renderAnalytics() {
     if (rosterCache && rosterCache.length > 0) {
         rosterCache.forEach(s => {
             if (!s.nganh) return;
-            if (userMajors.length > 0 && !userMajors.includes(s.nganh)) return;
+            const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
+            if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
             totalRoster++;
         });
     }
@@ -1160,12 +1171,17 @@ function renderAnalytics() {
     if (rosterCache && rosterCache.length > 0) {
         rosterCache.forEach(s => {
             if (!s.nganh) return;
-            if (userMajors.length > 0 && !userMajors.includes(s.nganh)) return;
-            if (!majorStats[s.nganh]) majorStats[s.nganh] = { g: 0, y: 0, r: 0 };
+            const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
+            if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
+            
             const st = statusMap[s.mssv] || 'green';
-            if (st === 'green') majorStats[s.nganh].g++;
-            else if (st === 'yellow') majorStats[s.nganh].y++;
-            else if (st === 'red') majorStats[s.nganh].r++;
+            sMajors.forEach(m => {
+                if (userMajors.length > 0 && !userMajors.includes(m)) return;
+                if (!majorStats[m]) majorStats[m] = { g: 0, y: 0, r: 0 };
+                if (st === 'green') majorStats[m].g++;
+                else if (st === 'yellow') majorStats[m].y++;
+                else if (st === 'red') majorStats[m].r++;
+            });
         });
     }
 
@@ -1203,6 +1219,7 @@ function renderAnalytics() {
     });
 }
 
+
 // ══════════════════════════════════════════════════════════════════
 //  SECTION 10 — ADMIN MODULE (Quản lý tài khoản)
 //
@@ -1216,27 +1233,70 @@ function renderAnalytics() {
 //                         Ưu điểm prototype: không cần form, nhanh gọn.
 //                         Nhược điểm: prompt() chặn main thread (chỉ OK khi demo).
 // ══════════════════════════════════════════════════════════════════
-function renderAdminPanel() {
+async function renderAdminPanel() {
     const list = document.getElementById('accountList');
-    list.innerHTML = Object.values(DB.accounts).map(a => {
-        const bgIcon = { Admin: 'bg-rose-100', GV: 'bg-blue-100', CTSV: 'bg-emerald-100', CNBM: 'bg-purple-100' }[a.rawRole] || 'bg-slate-100';
-        const icon = { Admin: '🔧', GV: '👨‍🏫', CTSV: '👤', CNBM: '🎓' }[a.rawRole] || '👤';
+    list.innerHTML = `<div class="p-5 text-center text-slate-500 text-sm">Đang tải dữ liệu...</div>`;
+
+    if (!supabase) return;
+    const { data: accounts, error } = await supabase.from('accounts').select('*').order('created_at', { ascending: false });
+    if (error) {
+        list.innerHTML = `<div class="p-5 text-center text-rose-500 text-sm">Lỗi tải dữ liệu: ${error.message}</div>`;
+        return;
+    }
+
+    const majorSelect = document.getElementById('adminMajorFilter');
+    if (majorSelect) {
+        const curMajor = majorSelect.value;
+        const majors = [...new Set(accounts.flatMap(a => (a.major || '').split(',').map(m => m.trim())).filter(Boolean))].sort();
+        majorSelect.innerHTML = '<option value="">Tất cả ngành</option>';
+        majors.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            majorSelect.appendChild(opt);
+        });
+        if (curMajor) majorSelect.value = curMajor;
+    }
+
+    const roleFilter = document.getElementById('adminRoleFilter')?.value || '';
+    const majorFilter = majorSelect?.value || '';
+
+    let filtered = accounts.filter(a => {
+        const aRole = (a.raw_role || '').toLowerCase();
+        if (roleFilter && aRole !== roleFilter.toLowerCase()) return false;
+        
+        const aMajors = (a.major || '').split(',').map(m => m.trim().toLowerCase()).filter(Boolean);
+        if (majorFilter && !aMajors.includes(majorFilter.toLowerCase())) return false;
+        
+        return true;
+    });
+
+    if (!filtered.length) {
+        list.innerHTML = `<div class="p-5 text-center text-slate-500 text-sm">Không tìm thấy tài khoản nào phù hợp</div>`;
+        return;
+    }
+
+    list.innerHTML = filtered.map(a => {
+        const rawRole = (a.raw_role || '').toUpperCase() === 'ADMIN' ? 'Admin' : (a.raw_role || '').toUpperCase();
+        const bgIcon = { Admin: 'bg-rose-100', GV: 'bg-blue-100', CTSV: 'bg-emerald-100', CNBM: 'bg-purple-100' }[rawRole] || 'bg-slate-100';
+        const icon = { Admin: '🔧', GV: '👨‍🏫', CTSV: '👤', CNBM: '🎓' }[rawRole] || '👤';
+        
         return `
         <div class="flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition">
             <div class="flex items-center gap-3">
                 <div class="w-9 h-9 ${bgIcon} rounded-xl flex items-center justify-center text-lg">${icon}</div>
                 <div>
                     <p class="font-semibold text-sm text-slate-700">${a.name}</p>
-                    <p class="text-xs text-slate-400"><span class="font-mono">${a.code}</span> · ${a.role}${a.lop ? ' · ' + a.lop : ''}</p>
+                    <p class="text-xs text-slate-400"><span class="font-mono">${a.code}</span> · ${a.role}${a.major ? ' · ' + a.major : ''}</p>
                 </div>
             </div>
             <div class="flex items-center gap-2">
                 <span class="text-xs px-2 py-0.5 rounded-full font-semibold ${a.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
                     ${a.is_active ? 'Active' : 'Inactive'}
                 </span>
-                <!-- Nút toggle ẩn với Admin (không thể tự vô hiệu hóa Admin) -->
-                ${a.rawRole !== 'Admin' ? `
-                <button onclick="toggleAccount('${a.code}')"
+                <!-- Nút toggle ẩn với Admin -->
+                ${rawRole !== 'Admin' ? `
+                <button onclick="toggleAccount('${a.code}', ${a.is_active})"
                     class="text-xs px-2.5 py-1 border border-slate-200 rounded-lg hover:bg-slate-100 text-slate-600 transition font-medium">
                     ${a.is_active ? 'Vô hiệu hóa' : 'Kích hoạt'}
                 </button>` : ''}
@@ -1245,22 +1305,40 @@ function renderAdminPanel() {
     }).join('');
 }
 
-// Toggle kích hoạt / vô hiệu hóa tài khoản
-function toggleAccount(code) {
-    if (DB.accounts[code]) DB.accounts[code].is_active = !DB.accounts[code].is_active;
-    renderAdminPanel(); // re-render để cập nhật badge và nút
+// Toggle kích hoạt / vô hiệu hóa tài khoản (Supabase)
+async function toggleAccount(code, currentStatus) {
+    if (!supabase) return;
+    const { error } = await supabase.from('accounts').update({ is_active: !currentStatus }).eq('code', code);
+    if (error) alert("Lỗi: " + error.message);
+    else renderAdminPanel();
 }
 
-// Tạo tài khoản mới qua prompt liên tiếp (UI tối giản cho prototype)
-function openCreateAccount() {
+// Tạo tài khoản mới qua prompt liên tiếp (Supabase)
+async function openCreateAccount() {
     const code = prompt('Mã truy cập mới (VD: GV_THANH):'); if (!code) return;
     const name = prompt('Tên hiển thị:'); if (!name) return;
-    const role = prompt('Vai trò (GV / CTSV / CNBM):'); if (!role) return;
-    const lop = (role === 'GV') ? prompt('Lớp dạy (VD: IT18301):') : null;
+    const role = prompt('Vai trò (Admin / GV / CTSV / CNBM):'); if (!role) return;
+    
+    let major = null;
+    if (role === 'GV' || role === 'CNBM') {
+        major = prompt('Ngành quản lý (VD: Computing, Business... để trống nếu không có):') || null;
+    }
+    
     const c = code.trim().toUpperCase();
-    DB.accounts[c] = { code: c, name: name.trim(), role: role === 'GV' ? 'Giảng viên' : role, rawRole: role.trim(), major: null, lop, is_active: true };
-    renderAdminPanel();
-    alert(`✅ Đã tạo tài khoản: ${c}`);
+    const { error } = await supabase.from('accounts').insert([{ 
+        code: c, 
+        name: name.trim(), 
+        role: role === 'GV' ? 'Giảng viên' : role, 
+        raw_role: role.trim(), 
+        major: major, 
+        is_active: true 
+    }]);
+
+    if (error) alert(`❌ Lỗi tạo tài khoản: ${error.message}`);
+    else {
+        alert(`✅ Đã tạo tài khoản: ${c}`);
+        renderAdminPanel();
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1299,6 +1377,56 @@ function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 //  markAllRead()      : ẩn badge số, đóng dropdown
 //  closeNotifIfOutside: đóng dropdown khi click ra ngoài
 // ══════════════════════════════════════════════════════════════════
+// Hàm tiện ích lấy thời gian mới nhất của 1 sinh viên (từ status update hoặc feedback mới)
+function getLatestTime(s) {
+    const t1 = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+    const t2 = s.latestFbCreatedAt ? new Date(s.latestFbCreatedAt).getTime() : 0;
+    return Math.max(t1, t2);
+}
+
+// Lấy danh sách SV mục tiêu cho thông báo (có cập nhật trong vòng 24h qua)
+function getTargetStudentsForNotif() {
+    if (!State.students) return [];
+    
+    const now = Date.now();
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+    let targetStudents = State.students
+        .filter(s => {
+            // Chỉ thông báo cho các case cần chú ý
+            const isRedOrYellow = (s.status === 'red' || s.status === 'yellow');
+            const hasFeedback = (s.feedbacks && s.feedbacks.length > 0);
+            if (!isRedOrYellow && !hasFeedback) return false;
+            
+            // Check xem thời gian cập nhật có nằm trong 24h qua không
+            const latestTime = getLatestTime(s);
+            return (now - latestTime) <= ONE_DAY_MS;
+        });
+
+    if (State.user && State.user.rawRole === 'GV') {
+        const ucode = State.user.code.toLowerCase();
+        const uname = State.user.name.toLowerCase();
+        targetStudents = targetStudents.filter(s => {
+            if (!s.giang_vien) return false;
+            const gvStr = s.giang_vien.toLowerCase();
+            return gvStr.includes(ucode) || gvStr.includes(uname);
+        });
+    }
+    return targetStudents.sort((a, b) => getLatestTime(b) - getLatestTime(a));
+}
+
+function updateNotifBadge() {
+    const targetStudents = getTargetStudentsForNotif();
+    const badge = document.getElementById('notifBadge');
+    
+    if (targetStudents.length > 0) {
+        badge.textContent = targetStudents.length;
+        badge.classList.remove('hidden');
+    } else {
+        badge.classList.add('hidden');
+    }
+}
+
 function toggleNotif() {
     const dd = document.getElementById('notifDropdown');
     const isOpen = dd.classList.contains('active');
@@ -1308,63 +1436,40 @@ function toggleNotif() {
 
 function renderNotifPanel() {
     const container = document.getElementById('notifList');
-
-    // Hàm lấy thời gian cập nhật mới nhất (so sánh updated_at của sinh viên và created_at của feedback)
-    const getLatestTime = (s) => {
-        const t1 = s.updated_at ? new Date(s.updated_at).getTime() : 0;
-        const t2 = s.latestFbCreatedAt ? new Date(s.latestFbCreatedAt).getTime() : 0;
-        return Math.max(t1, t2);
-    };
-
-    // Lấy các SV đang cảnh báo đỏ, vàng, hoặc vừa được cập nhật lần đầu (có 1 feedback)
-    let targetStudents = State.students
-        .filter(s => s.status === 'red' || s.status === 'yellow' || (s.feedbacks && s.feedbacks.length === 1))
-        .sort((a, b) => getLatestTime(b) - getLatestTime(a));
-
-    // Phân quyền: Giảng viên chỉ xem được thông báo của sinh viên thuộc lớp mình dạy
-    if (State.user.rawRole === 'GV') {
-        const ucode = State.user.code.toLowerCase();
-        const uname = State.user.name.toLowerCase();
-        targetStudents = targetStudents.filter(s => {
-            if (!s.giang_vien) return false;
-            const gvStr = s.giang_vien.toLowerCase();
-            return gvStr.includes(ucode) || gvStr.includes(uname);
-        });
-    }
+    const targetStudents = getTargetStudentsForNotif();
 
     if (!targetStudents.length) {
         container.innerHTML = `
         <div class="px-4 py-8 text-center">
             <div class="text-3xl mb-2">✅</div>
-            <p class="text-sm text-slate-500">Không có thông báo nào</p>
+            <p class="text-sm text-slate-500">Không có cập nhật nào trong 24h qua</p>
         </div>`;
         return;
     }
 
     container.innerHTML = targetStudents.map(s => {
-        // Lấy feedback gần nhất của SV này
+        const latestTime = getLatestTime(s);
+        
         const text = s.latestFbContent;
         const preview = text
             ? (text.length > 55 ? text.slice(0, 55) + '…' : text)
             : 'Chưa có phản hồi';
 
-        let icon = '🔴', bgClass = 'bg-rose-100', textClass = 'text-rose-400', hoverClass = 'hover:bg-rose-50';
+        let icon = '🔴', textClass = 'text-rose-500';
         if (s.status === 'yellow') {
-            icon = '🟡'; bgClass = 'bg-amber-100'; textClass = 'text-amber-500'; hoverClass = 'hover:bg-amber-50';
+            icon = '🟡'; textClass = 'text-amber-500';
         } else if (s.status === 'green') {
-            icon = '🟢'; bgClass = 'bg-emerald-100'; textClass = 'text-emerald-500'; hoverClass = 'hover:bg-emerald-50';
+            icon = '🟢'; textClass = 'text-emerald-500';
         }
 
-        const latestTime = getLatestTime(s);
-
         return `
-        <div onclick="notifGoTo(${s.id})" class="flex items-start gap-3 px-4 py-3 ${hoverClass} cursor-pointer transition border-b border-slate-50 last:border-0">
-            <div class="w-8 h-8 ${bgClass} rounded-full flex items-center justify-center text-sm shrink-0 mt-0.5">${icon}</div>
-            <div class="min-w-0">
-                <p class="text-sm font-bold text-slate-800">${s.ho_ten}</p>
+        <div onclick="notifGoTo(${s.id})" class="flex items-start gap-3 px-4 py-3 bg-white hover:bg-slate-50 cursor-pointer transition border-b border-slate-100 last:border-0">
+            <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm shrink-0 mt-0.5 bg-white border border-slate-200 shadow-sm">${icon}</div>
+            <div class="min-w-0 pr-4">
+                <p class="text-sm font-semibold text-slate-800">${s.ho_ten}</p>
                 <p class="text-xs text-slate-500 font-mono">${s.mssv} · ${s.lop || 'N/A'}</p>
-                <p class="text-xs text-slate-400 mt-0.5 truncate">💬 ${preview}</p>
-                <p class="text-xs ${textClass} mt-0.5">⏱️ ${timeAgo(latestTime)}</p>
+                <p class="text-xs text-slate-500 mt-0.5 truncate">💬 ${preview}</p>
+                <p class="text-xs ${textClass} mt-1 font-medium">⏱️ ${timeAgo(latestTime)}</p>
             </div>
         </div>`;
     }).join('');
@@ -1374,12 +1479,6 @@ function renderNotifPanel() {
 function notifGoTo(studentId) {
     document.getElementById('notifDropdown').classList.remove('active');
     openStudentModal(studentId);
-}
-
-// Đánh dấu tất cả đã đọc: ẩn badge + đóng dropdown
-function markAllRead() {
-    document.getElementById('notifBadge').classList.add('hidden');
-    document.getElementById('notifDropdown').classList.remove('active');
 }
 
 // Đóng dropdown khi click ra ngoài vùng chuông
