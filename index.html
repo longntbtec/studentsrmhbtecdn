@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SRMH v2.0</title>
+    <title>SRMH v2.1</title>
 
     <!--
     ╔══════════════════════════════════════════════════════════════════╗
@@ -49,8 +49,7 @@
                 </div>
                 <h1 class="text-3xl font-black text-slate-800">SRMH</h1>
                 <p class="text-slate-500 text-sm mt-1">Student Real-time Monitoring Hub</p>
-                <span
-                    class="inline-block mt-2 text-xs bg-violet-100 text-violet-700 px-3 py-1 rounded-full font-bold">v2.0</span>
+                <span title="Cập nhật v2.1: Hiển thị nhiều ngành, Bắt buộc chọn trạng thái, Admin có quyền xóa sinh viên" class="inline-block mt-2 text-xs bg-violet-100 text-violet-700 px-3 py-1 rounded-full font-bold cursor-help">v2.1</span>
             </div>
 
             <!-- Form đăng nhập -->
@@ -98,8 +97,8 @@
                     <div class="flex items-center gap-2 shrink-0">
                         <span class="text-xl">🎓</span>
                         <span class="font-black text-slate-800 hidden sm:block">SRMH</span>
-                        <span
-                            class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full font-bold">v2.0</span>
+                        <span title="Cập nhật v2.1: Hiển thị nhiều ngành, Bắt buộc chọn trạng thái, Admin có quyền xóa sinh viên"
+                            class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full font-bold cursor-help">v2.1</span>
                     </div>
 
                     <!-- Tabs: mỗi nút gọi switchTab() để chuyển nội dung -->
@@ -134,10 +133,7 @@
                         <div id="notifDropdown" class="notif-dropdown">
                             <!-- Header -->
                             <div class="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-                                <p class="text-sm font-bold text-slate-700">🔔 Thông báo</p>
-                                <button onclick="markAllRead()"
-                                    class="text-xs text-indigo-600 hover:text-indigo-800 font-semibold transition">Đánh
-                                    dấu đã đọc</button>
+                                <p class="text-sm font-bold text-slate-700">🔔 Thông báo (24h qua)</p>
                             </div>
                             <!-- Danh sách thông báo -->
                             <div id="notifList" class="py-1"></div>
@@ -235,7 +231,7 @@
                         class="px-3 py-2 text-sm border border-slate-200 rounded-xl focus:border-indigo-400 focus:outline-none bg-white">
                         <option value="all">🏫 Tất cả lớp</option>
                     </select>
-                    <!-- Nút lọc nhanh: chỉ hiện SV "cần chăm sóc" (yellow + red) -->
+                    <!-- Nút lọc nhanh: chỉ hiện SV "cần chăm sóc" (chỉ red) -->
                     <button onclick="filterByStatus('attention')"
                         class="px-3 py-2 text-sm font-semibold bg-gradient-to-r from-amber-500 to-rose-500 text-white rounded-xl hover:shadow-md transition">
                         ⚠️ Cần chăm sóc
@@ -340,7 +336,21 @@
         <div id="tabContentAdmin" class="hidden max-w-7xl mx-auto px-4 py-5">
             <div class="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
                 <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-                    <h3 class="font-bold text-slate-700">👥 Quản lý tài khoản</h3>
+                    <div class="flex items-center gap-4">
+                        <h3 class="font-bold text-slate-700">👥 Quản lý tài khoản</h3>
+                        <div class="flex items-center gap-2">
+                            <select id="adminRoleFilter" onchange="renderAdminPanel()" class="px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 outline-none focus:border-indigo-400">
+                                <option value="">Tất cả vai trò</option>
+                                <option value="Admin">Admin</option>
+                                <option value="GV">Giảng viên</option>
+                                <option value="CTSV">CTSV</option>
+                                <option value="CNBM">CNBM</option>
+                            </select>
+                            <select id="adminMajorFilter" onchange="renderAdminPanel()" class="px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 outline-none focus:border-indigo-400">
+                                <option value="">Tất cả ngành</option>
+                            </select>
+                        </div>
+                    </div>
                     <button onclick="openCreateAccount()"
                         class="text-xs px-3 py-2 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition">+
                         Tạo tài khoản</button>
@@ -427,6 +437,10 @@
                                 class="px-2.5 py-1.5 bg-white/20 hover:bg-rose-500   text-white rounded-lg text-sm transition font-bold"
                                 title="Cảnh báo">🔴</button>
                         </div>
+                        <!-- Nút xóa sinh viên: chỉ hiện với Admin -->
+                        <button id="btnDeleteStudent" onclick="deleteStudent()" style="display:none"
+                            class="px-2.5 py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-sm transition font-bold"
+                            title="Xóa sinh viên">🗑️</button>
                         <!-- Nút đóng modal -->
                         <button onclick="closeStudentModal()"
                             class="text-white/70 hover:text-white text-2xl leading-none ml-1">×</button>
@@ -535,11 +549,12 @@
                         class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none resize-none"></textarea>
                 </div>
 
-                <!-- Trạng thái ban đầu (Mặc định: Xanh) -->
+                <!-- Trạng thái ban đầu (Bắt buộc) -->
                 <div>
-                    <label class="text-xs font-bold text-slate-600 mb-1 block">Trạng thái ban đầu</label>
+                    <label class="text-xs font-bold text-slate-600 mb-1 block">Trạng thái ban đầu *</label>
                     <select id="initialStatus"
                         class="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:border-indigo-500 focus:outline-none bg-white">
+                        <option value="">-- Chọn trạng thái --</option>
                         <option value="green">🟢 Ổn định (Xanh)</option>
                         <option value="yellow">🟡 Cần theo dõi (Vàng)</option>
                         <option value="red">🔴 Cảnh báo (Đỏ)</option>
