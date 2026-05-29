@@ -185,6 +185,12 @@ async function login() {
     else
         document.getElementById('statusBtns').style.display = 'none';
 
+    // Nút xóa sinh viên chỉ hiện với Admin
+    if (State.user.rawRole === 'Admin')
+        document.getElementById('btnDeleteStudent').style.display = 'block';
+    else
+        document.getElementById('btnDeleteStudent').style.display = 'none';
+
     initDashboard();
 }
 
@@ -429,7 +435,7 @@ function renderStudents() {
     }
 
     // Lọc theo bộ lọc trạng thái
-    if (State.statusFilter === 'attention') list = list.filter(s => s.status === 'yellow' || s.status === 'red');
+    if (State.statusFilter === 'attention') list = list.filter(s => s.status === 'red');
     else if (State.statusFilter !== 'all') list = list.filter(s => (s.status || 'green') === State.statusFilter);
 
     // Lọc theo lớp (kiểm tra chuỗi lop phân tách bằng dấu phẩy)
@@ -481,6 +487,17 @@ function studentCard(s) {
     const latestFbText = s.latestFbContent;
     const preview = latestFbText ? (latestFbText.length > 70 ? latestFbText.slice(0, 70) + '…' : latestFbText) : 'Chưa có phản hồi';
 
+    // Hiển thị ngành đối với Admin và CTSV
+    let majorsHtml = '';
+    if (['Admin', 'CTSV'].includes(State.user.rawRole) && s.nganh) {
+        const majors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
+        if (majors.length === 1) {
+            majorsHtml = `<span class="text-[10px] text-slate-400 italic whitespace-nowrap">${majors[0]}</span>`;
+        } else {
+            majorsHtml = `<div class="flex flex-col items-end gap-0.5">${majors.map(m => `<span class="text-[10px] text-slate-400 italic whitespace-nowrap">${m}</span>`).join('')}</div>`;
+        }
+    }
+
     return `
     <div onclick="openStudentModal(${s.id})"
         class="bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group">
@@ -504,6 +521,8 @@ function studentCard(s) {
                 <p class="text-xs text-slate-500 truncate">💬 ${preview}</p>
                 ${s.latestFbCreatedAt ? `<p class="text-xs text-slate-300 mt-0.5">⏱️ ${timeAgo(s.latestFbCreatedAt)}</p>` : ''}
             </div>
+            <!-- Ngành học -->
+            ${majorsHtml ? `<div class="hidden lg:flex items-center gap-1.5 shrink-0 ml-2">${majorsHtml}</div>` : ''}
             <!-- Badge trạng thái + thời gian cập nhật -->
             <div class="flex items-center gap-2 shrink-0">
                 <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${badge}">${emoji} ${label}</span>
@@ -786,10 +805,40 @@ async function updateStatus(newSt) {
     await initDashboard();
 }
 
+// Xóa sinh viên khỏi danh sách (Chỉ dành cho Admin)
+async function deleteStudent() {
+    if (!State.currentStudentId || State.user.rawRole !== 'Admin') return;
+    
+    if (!confirm('Hành động này sẽ XÓA VĨNH VIỄN sinh viên này cùng toàn bộ lịch sử phản hồi khỏi danh sách. Bạn có chắc chắn muốn tiếp tục?')) return;
+    
+    const btn = document.getElementById('btnDeleteStudent');
+    const oldText = btn.innerHTML;
+    btn.innerHTML = '⏳';
+    btn.disabled = true;
+
+    // Xóa lần lượt từ bảng con đến bảng cha để tránh lỗi foreign key constraint (nếu chưa set cascade)
+    await supabase.from('feedbacks').delete().eq('student_id', State.currentStudentId);
+    await supabase.from('student_classes').delete().eq('student_id', State.currentStudentId);
+    
+    const { error } = await supabase.from('students').delete().eq('id', State.currentStudentId);
+
+    btn.innerHTML = oldText;
+    btn.disabled = false;
+
+    if (error) {
+        console.error("Lỗi xóa sinh viên:", error);
+        alert('❌ Lỗi khi xóa sinh viên: ' + error.message);
+        return;
+    }
+    
+    closeStudentModal();
+    await initDashboard();
+}
+
 // ══════════════════════════════════════════════════════════════════
 //  SECTION 8 — ADD STUDENT MODULE (Thêm sinh viên mới)
 //
-//  Luồng MỚI (v2.0):
+//  Luồng MỚI (v2.1):
 //  – Mặc định: GV tìm SV từ bảng student_roster (autocomplete)
 //    → Chọn SV → MSSV + Tên + Lớp tự điền → Nhấn Thêm
 //  – Fallback: Toggle "Nhập tay" → nhập MSSV + Tên + Lớp thủ công
@@ -921,7 +970,7 @@ async function openAddStudentModal() {
     }
 
     document.getElementById('initialFeedback').value = '';
-    document.getElementById('initialStatus').value = 'green';
+    document.getElementById('initialStatus').value = '';
     document.getElementById('duplicateWarning').classList.add('hidden');
 
     document.getElementById('addStudentModal').classList.add('active');
@@ -963,6 +1012,13 @@ async function createStudent() {
         return;
     }
 
+    const initialStatus = document.getElementById('initialStatus').value;
+    if (!initialStatus) {
+        alert('Vui lòng chọn Trạng thái ban đầu.');
+        document.getElementById('initialStatus').focus();
+        return;
+    }
+
     const mssv = State.rosterSelected.mssv;
     const name = State.rosterSelected.ho_ten;
     const lop = State.rosterSelected.lop || '';
@@ -988,8 +1044,6 @@ async function createStudent() {
         openStudentModal(dupData.id);
         return;
     }
-
-    const initialStatus = document.getElementById('initialStatus').value;
 
     // 2. Insert vào bảng students
     const { data: newStu, error: err1 } = await supabase
@@ -1515,7 +1569,7 @@ function timeAgo(ds) {
     return `${Math.floor(d / 86400)} ngày trước`;
 }
 
-console.log('✅ SRMH v2.0 Ready!');
+console.log('✅ SRMH v2.1 Ready!');
 
 // ══════════════════════════════════════════════════════════════════
 //  SECTION 14 — REPORT MODULE (Xuất báo cáo phản hồi sinh viên)
