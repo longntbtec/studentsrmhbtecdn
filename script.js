@@ -1,7 +1,4 @@
-// Khởi tạo Supabase Client
-const supabaseUrl = 'https://moahaaubepvvpkukjoun.supabase.co';
-// WARNING: Điền Anon Key vào thay cho process.env.SUPABASE_KEY vì file HTML chạy trên trình duyệt client
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1vYWhhYXViZXB2dnBrdWtqb3VuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjk2NTksImV4cCI6MjA5MTkwNTY1OX0.AgY0-QhMeTXF08eCBRnIxyAjq8mtNHYQBDr6F5jqPcQ';
+// Khởi tạo Supabase Client (supabaseUrl và supabaseKey đã được chuyển sang config.js)
 
 let supabase = null;
 try {
@@ -190,6 +187,16 @@ async function login() {
         document.getElementById('btnDeleteStudent').style.display = 'block';
     else
         document.getElementById('btnDeleteStudent').style.display = 'none';
+
+    // Ẩn checkbox "Cần CTSV hỗ trợ" đối với CTSV và Admin
+    const escalateWrapper = document.getElementById('escalateCheckboxWrapper');
+    if (escalateWrapper) {
+        if (['CTSV', 'Admin'].includes(State.user.rawRole)) {
+            escalateWrapper.style.display = 'none';
+        } else {
+            escalateWrapper.style.display = 'flex';
+        }
+    }
 
     initDashboard();
 }
@@ -447,8 +454,12 @@ function renderStudents() {
     }
 
     // Lọc theo bộ lọc trạng thái
-    if (State.statusFilter === 'attention') list = list.filter(s => s.status === 'red');
-    else if (State.statusFilter !== 'all') list = list.filter(s => (s.status || 'green') === State.statusFilter);
+    if (State.statusFilter === 'attention') {
+        list = list.filter(s => s.latestFbContent && s.latestFbContent.includes('[CẦN CTSV HỖ TRỢ]'));
+    }
+    else if (State.statusFilter !== 'all') {
+        list = list.filter(s => (s.status || 'green') === State.statusFilter);
+    }
 
     // Lọc theo lớp (kiểm tra chuỗi lop phân tách bằng dấu phẩy)
     if (classF !== 'all') list = list.filter(s =>
@@ -575,6 +586,8 @@ function closeStudentModal() {
     document.getElementById('studentModal').classList.remove('active');
     document.getElementById('classPromptOverlay').classList.remove('active');
     document.getElementById('feedbackInput').value = '';
+    const escalateCb = document.getElementById('escalateCheckbox');
+    if (escalateCb) escalateCb.checked = false;
     cancelReply();
     State.currentStudentId = null;
     State.replyParentId = null;
@@ -598,11 +611,12 @@ async function renderTimeline(studentId) {
     }
 
     // Tách roots (parent_id = null) và replies, sort thời gian
-    const roots = allFbs.filter(f => !f.parent_id)
+    const visibleFbs = allFbs.filter(f => !f.reactions || !f.reactions.some(r => r.type === 'is_duplicate_agree'));
+    const roots = visibleFbs.filter(f => !f.parent_id)
         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     el.innerHTML = roots.map(fb => {
-        const replies = allFbs.filter(r => r.parent_id === fb.id)
+        const replies = visibleFbs.filter(r => r.parent_id === fb.id)
             .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
         return fbCard(fb, false) +
             (replies.length
@@ -628,30 +642,74 @@ function fbCard(fb, isReply) {
     const icon = isGV ? '👨‍🏫' : isCNBM ? '🎓' : '👤';
     const t = new Date(fb.created_at).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-    const reacted = (fb.reactions || []).some(r => r.code === State.user.code); // user đã like chưa?
-    const isMyFb = fb.author_code === State.user.code;                        // đây là feedback của mình?
-    const rCount = (fb.reactions || []).length;
+    const agrees = (fb.reactions || []).filter(r => r.type === 'agree');
+    const agreesText = agrees.length > 0 ? ` <span class="text-xs font-normal opacity-80">(+ ${agrees.map(a => a.name).join(', ')})</span>` : '';
 
-    // Supabase trả về accounts là object: {role, major}
+    const likes = (fb.reactions || []).filter(r => r.type !== 'agree' && r.type !== 'is_duplicate_agree');
+    const reacted = likes.some(r => r.code === State.user.code); // user đã like chưa?
+    const isMyFb = fb.author_code === State.user.code;                        // đây là feedback của mình?
+    const rCount = likes.length;
+
     const acc = fb.accounts;
     const roleLabel = acc
         ? (acc.major ? `${acc.role} · ${acc.major}` : acc.role)
         : fb.role; // fallback
+
+    // Kiểm tra xem CNBM có cùng bộ môn với GV viết comment không
+    const isSameMajor = (() => {
+        if (!State.user.major || !acc || !acc.major) return false;
+        const uMajors = State.user.major.split(',').map(m => m.trim());
+        const fbMajors = acc.major.split(',').map(m => m.trim());
+        return uMajors.some(m => fbMajors.includes(m));
+    })();
+
+    let finalContent = fb.content || '';
+    let escalateBadge = '';
+    let resolveBtn = '';
+
+    if (finalContent.includes('[CẦN CTSV HỖ TRỢ]')) {
+        finalContent = finalContent.replace('[CẦN CTSV HỖ TRỢ]', '').trim();
+        escalateBadge = `<span class="bg-rose-100 text-rose-700 text-[10px] px-2 py-0.5 rounded uppercase font-bold mr-2 inline-flex items-center gap-1">📢 Cần hỗ trợ</span>`;
+        // Hiển thị nút Đã giải quyết cho CTSV hoặc Admin
+        if (State.user && (State.user.rawRole === 'CTSV' || State.user.rawRole === 'Admin') && !isReply) {
+            resolveBtn = `<button onclick="resolveEscalation(${fb.id}, ${fb.student_id})" class="text-xs text-emerald-600 hover:text-emerald-700 font-bold px-2 py-1 rounded bg-emerald-50 hover:bg-emerald-100 transition">✅ Đã giải quyết</button>`;
+        }
+    } else if (finalContent.includes('[CTSV ĐÃ XỬ LÝ]')) {
+        finalContent = finalContent.replace('[CTSV ĐÃ XỬ LÝ]', '').trim();
+        escalateBadge = `<span class="bg-emerald-100 text-emerald-700 text-[10px] px-2 py-0.5 rounded uppercase font-bold mr-2 inline-flex items-center gap-1">✅ Đã xử lý</span>`;
+    }
+
+    let noteBadge = '';
+    if (finalContent.includes('[GHI CHÚ XỬ LÝ]')) {
+        finalContent = finalContent.replace('[GHI CHÚ XỬ LÝ]', '').trim();
+        noteBadge = `<span class="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded uppercase font-bold mb-1 inline-block">Ghi chú từ CTSV</span><br>`;
+    }
+
+    const canEscalate = !isReply && !escalateBadge && (
+        (State.user.rawRole === 'CNBM' && (isMyFb || isSameMajor)) ||
+        (State.user.rawRole === 'GV' && isMyFb)
+    );
 
     return `
     <div class="tl-item">
         <div class="border ${bg} rounded-xl p-3 ${isReply ? 'text-sm' : ''}">
             <div class="flex items-center justify-between mb-1.5">
                 <div>
-                    <span class="font-bold text-sm ${nc}">${icon} ${fb.author_name}</span>
+                    ${escalateBadge}
+                    <span class="font-bold text-sm ${nc}">${icon} ${fb.author_name}${agreesText}</span>
                     <span class="block text-[11px] ${nc} opacity-60 font-medium ml-[22px] -mt-0.5">${roleLabel}</span>
                 </div>
                 <span class="text-xs text-slate-400">${t}</span>
             </div>
-            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${fb.content}</p>
+            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${noteBadge}${finalContent}</p>
             <div class="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-white/60">
+                ${resolveBtn}
                 <!-- Nút "Trả lời" chỉ hiện ở feedback gốc, không hiện ở reply -->
                 ${!isReply ? `<button onclick="replyTo(${fb.id},'${fb.author_name}')" class="text-xs text-slate-400 hover:text-indigo-600 transition">↪️ Trả lời</button>` : ''}
+                <!-- Nút "Cùng ý kiến" chỉ hiện ở feedback gốc, không phải của chính mình, và chỉ dành cho GV/CNBM -->
+                ${!isReply && ['GV', 'CNBM'].includes(State.user.rawRole) && fb.author_code !== State.user.code && !agrees.some(a => a.code === State.user.code) ? `<button onclick="agreeWithFeedback(${fb.id})" class="text-xs text-slate-400 hover:text-emerald-600 transition">🤝 Cùng comment</button>` : ''}
+                <!-- Nút "Báo CTSV hỗ trợ" (CNBM báo cáo hộ GV, hoặc GV tự báo cáo bài của mình) -->
+                ${canEscalate ? `<button onclick="escalateFeedback(${fb.id}, ${fb.student_id})" class="text-xs text-rose-500 hover:text-rose-700 transition">📢 Nhờ CTSV hỗ trợ</button>` : ''}
                 <!-- Nút reaction: tất cả mọi người đều có quyền thả tim -->
                 <button onclick="toggleReaction(${fb.id})" class="reaction-btn ${reacted ? 'reacted' : ''}">
                     <span>${reacted ? '❤️' : '🤍'}</span>
@@ -673,12 +731,87 @@ function fbCard(fb, isReply) {
 //  cancelReply()      : hủy chế độ reply
 //  toggleReaction(id) : toggle like/unlike cho 1 feedback
 // ══════════════════════════════════════════════════════════════════
+
+// Cùng comment với một phản hồi khác (ghi nhận vào báo cáo)
+async function agreeWithFeedback(parentId) {
+    if (window.isAgreeing) return;
+    window.isAgreeing = true;
+    
+    // Lấy nội dung comment gốc
+    const { data: parentFb } = await supabase.from('feedbacks').select('*').eq('id', parentId).single();
+    if (!parentFb) { window.isAgreeing = false; return; }
+
+    const reactions = parentFb.reactions || [];
+    if (reactions.some(r => r.code === State.user.code && r.type === 'agree')) {
+        window.isAgreeing = false;
+        return;
+    }
+
+    // 1. Thêm người đồng ý vào danh sách reactions của comment gốc
+    reactions.push({ code: State.user.code, name: State.user.name, type: 'agree' });
+    await supabase.from('feedbacks').update({ reactions: reactions }).eq('id', parentId);
+
+    // 2. Tạo một bản sao comment cho chính GV này để xuất báo cáo (bị ẩn trong timeline)
+    const nowISO = new Date().toISOString();
+    await supabase.from('feedbacks').insert([{
+        student_id: State.currentStudentId,
+        role: State.user.rawRole,
+        author_name: State.user.name,
+        author_code: State.user.code,
+        content: parentFb.content,
+        parent_id: null,
+        reactions: [{ type: 'is_duplicate_agree' }]
+    }]);
+
+    await supabase.from('students').update({ updated_at: nowISO }).eq('id', State.currentStudentId);
+
+    await renderTimeline(State.currentStudentId);
+    await initDashboard();
+    
+    window.isAgreeing = false;
+}
+
 async function sendFeedback() {
     const content = document.getElementById('feedbackInput').value.trim();
     if (!content || !State.currentStudentId) return;
 
     // Giảng viên tiếp theo không cần nhập lớp đang dạy nữa vì thông tin lớp đã hiện đầy đủ từ danh sách kỳ học.
     await doSend(content);
+}
+
+// Xử lý CTSV Đánh dấu đã giải quyết
+async function resolveEscalation(fbId, studentId) {
+    const note = prompt('Nhập ghi chú xử lý (Bắt buộc - VD: Đã gọi điện cho phụ huynh):');
+    if (!note || !note.trim()) {
+        alert('Bạn phải nhập ghi chú xử lý để tiếp tục!');
+        return;
+    }
+
+    // 1. Quét và đổi tất cả cờ đỏ thành cờ xanh cho SV này (bao gồm cả các bản sao "Cùng comment")
+    const { data: fbs } = await supabase.from('feedbacks').select('id, content').eq('student_id', studentId).like('content', '%[CẦN CTSV HỖ TRỢ]%');
+    if (fbs && fbs.length > 0) {
+        for (let fb of fbs) {
+            const newContent = fb.content.replace('[CẦN CTSV HỖ TRỢ]', '[CTSV ĐÃ XỬ LÝ]');
+            await supabase.from('feedbacks').update({ content: newContent }).eq('id', fb.id);
+        }
+    }
+
+    // 2. Chèn 1 comment mang danh nghĩa CTSV với nội dung ghi chú (Comment độc lập)
+    const nowISO = new Date().toISOString();
+    await supabase.from('feedbacks').insert([{
+        student_id: studentId,
+        author_code: State.user.code,
+        author_name: State.user.name,
+        role: State.user.rawRole,
+        content: `[GHI CHÚ XỬ LÝ] ${note.trim()}`,
+        parent_id: null // Sửa thành null để trở thành thông báo chung cho toàn bộ sinh viên thay vì reply riêng lẻ
+    }]);
+
+    await supabase.from('students').update({ updated_at: nowISO }).eq('id', studentId);
+
+    // 3. Làm mới UI
+    await renderTimeline(studentId);
+    await initDashboard();
 }
 
 // Xử lý khi GV xác nhận lớp trong popup:
@@ -713,6 +846,11 @@ async function doSend(content) {
     const btn = document.getElementById('btnSubmitFeedback');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
 
+    const escalateCb = document.getElementById('escalateCheckbox');
+    if (escalateCb && escalateCb.checked) {
+        content = '[CẦN CTSV HỖ TRỢ] ' + content;
+    }
+
     // Tính timestamp hiện tại (Cập nhật updatedAt cho thẻ SV)
     const nowISO = new Date().toISOString();
 
@@ -737,8 +875,30 @@ async function doSend(content) {
     await initDashboard();                        // refresh data ds sinh viên ngầm
 }
 
-// Bật chế độ reply: lưu ID parent, hiện replyBar, đổi placeholder input
-function replyTo(id, name) {
+// Nút bấm "Nhờ CTSV hỗ trợ" cho GV nếu quên tick lúc đăng
+window.escalateFeedback = async (fbId, studentId) => {
+    if (!confirm('Bạn muốn chuyển bình luận này thành yêu cầu CTSV hỗ trợ?')) return;
+
+    // 1. Cập nhật lại nội dung feedback
+    const { data: fbData, error: errGet } = await supabase.from('feedbacks').select('content').eq('id', fbId).single();
+    if (errGet || !fbData) return alert('Lỗi truy xuất bình luận');
+    
+    const newContent = '[CẦN CTSV HỖ TRỢ] ' + (fbData.content || '');
+    const { error: errUpdate } = await supabase.from('feedbacks').update({ content: newContent }).eq('id', fbId);
+    if (errUpdate) return alert('Lỗi cập nhật bình luận');
+
+    // 2. Cập nhật student_roster để nổi cờ lên màn hình CTSV
+    await supabase.from('student_roster').update({
+        latestFb: new Date().toISOString(),
+        latestFbContent: newContent
+    }).eq('id', studentId);
+
+    // 3. Render lại
+    renderTimeline(studentId);
+    renderStudents();
+};
+
+window.replyTo = (id, name) => {
     State.replyParentId = id;
     document.getElementById('replyBar').classList.remove('hidden');
     document.getElementById('replyName').textContent = name;
@@ -761,9 +921,9 @@ async function toggleReaction(fbId) {
     if (!fb) return;
 
     let reactions = fb.reactions || [];
-    const i = reactions.findIndex(r => r.code === State.user.code);
+    const i = reactions.findIndex(r => r.code === State.user.code && r.type !== 'agree' && r.type !== 'is_duplicate_agree');
     if (i > -1) reactions.splice(i, 1);
-    else reactions.push({ role: State.user.rawRole, code: State.user.code });
+    else reactions.push({ role: State.user.rawRole, code: State.user.code, name: State.user.name });
 
     await supabase.from('feedbacks').update({ reactions: reactions }).eq('id', fbId);
     await renderTimeline(State.currentStudentId); // re-render 
@@ -820,9 +980,9 @@ async function updateStatus(newSt) {
 // Xóa sinh viên khỏi danh sách (Chỉ dành cho Admin)
 async function deleteStudent() {
     if (!State.currentStudentId || State.user.rawRole !== 'Admin') return;
-    
+
     if (!confirm('Hành động này sẽ XÓA VĨNH VIỄN sinh viên này cùng toàn bộ lịch sử phản hồi khỏi danh sách. Bạn có chắc chắn muốn tiếp tục?')) return;
-    
+
     const btn = document.getElementById('btnDeleteStudent');
     const oldText = btn.innerHTML;
     btn.innerHTML = '⏳';
@@ -831,7 +991,7 @@ async function deleteStudent() {
     // Xóa lần lượt từ bảng con đến bảng cha để tránh lỗi foreign key constraint (nếu chưa set cascade)
     await supabase.from('feedbacks').delete().eq('student_id', State.currentStudentId);
     await supabase.from('student_classes').delete().eq('student_id', State.currentStudentId);
-    
+
     const { error } = await supabase.from('students').delete().eq('id', State.currentStudentId);
 
     btn.innerHTML = oldText;
@@ -842,7 +1002,7 @@ async function deleteStudent() {
         alert('❌ Lỗi khi xóa sinh viên: ' + error.message);
         return;
     }
-    
+
     closeStudentModal();
     await initDashboard();
 }
@@ -1250,7 +1410,7 @@ function renderAnalytics() {
             if (!s.nganh) return;
             const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
             if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
-            
+
             const st = statusMap[s.mssv] || 'green';
             sMajors.forEach(m => {
                 if (userMajors.length > 0 && !userMajors.includes(m)) return;
@@ -1341,10 +1501,10 @@ async function renderAdminPanel() {
     let filtered = accounts.filter(a => {
         const aRole = (a.raw_role || '').toLowerCase();
         if (roleFilter && aRole !== roleFilter.toLowerCase()) return false;
-        
+
         const aMajors = (a.major || '').split(',').map(m => m.trim().toLowerCase()).filter(Boolean);
         if (majorFilter && !aMajors.includes(majorFilter.toLowerCase())) return false;
-        
+
         return true;
     });
 
@@ -1357,7 +1517,7 @@ async function renderAdminPanel() {
         const rawRole = (a.raw_role || '').toUpperCase() === 'ADMIN' ? 'Admin' : (a.raw_role || '').toUpperCase();
         const bgIcon = { Admin: 'bg-rose-100', GV: 'bg-blue-100', CTSV: 'bg-emerald-100', CNBM: 'bg-purple-100' }[rawRole] || 'bg-slate-100';
         const icon = { Admin: '🔧', GV: '👨‍🏫', CTSV: '👤', CNBM: '🎓' }[rawRole] || '👤';
-        
+
         return `
         <div class="flex items-center justify-between px-5 py-3.5 hover:bg-slate-50 transition">
             <div class="flex items-center gap-3">
@@ -1395,20 +1555,20 @@ async function openCreateAccount() {
     const code = prompt('Mã truy cập mới (VD: GV_THANH):'); if (!code) return;
     const name = prompt('Tên hiển thị:'); if (!name) return;
     const role = prompt('Vai trò (Admin / GV / CTSV / CNBM):'); if (!role) return;
-    
+
     let major = null;
     if (role === 'GV' || role === 'CNBM') {
         major = prompt('Ngành quản lý (VD: Computing, Business... để trống nếu không có):') || null;
     }
-    
+
     const c = code.trim().toUpperCase();
-    const { error } = await supabase.from('accounts').insert([{ 
-        code: c, 
-        name: name.trim(), 
-        role: role === 'GV' ? 'Giảng viên' : role, 
-        raw_role: role.trim(), 
-        major: major, 
-        is_active: true 
+    const { error } = await supabase.from('accounts').insert([{
+        code: c,
+        name: name.trim(),
+        role: role === 'GV' ? 'Giảng viên' : role,
+        raw_role: role.trim(),
+        major: major,
+        is_active: true
     }]);
 
     if (error) alert(`❌ Lỗi tạo tài khoản: ${error.message}`);
@@ -1416,6 +1576,65 @@ async function openCreateAccount() {
         alert(`✅ Đã tạo tài khoản: ${c}`);
         renderAdminPanel();
     }
+}
+
+// Lấy danh sách Bug Reports (chỉ Admin)
+async function renderBugReports() {
+    const list = document.getElementById('bugReportList');
+    if (!list) return;
+    list.innerHTML = `<div class="p-8 text-center text-slate-400 text-sm">Đang tải báo cáo...</div>`;
+
+    if (!supabase) return;
+    const { data: bugs, error } = await supabase
+        .from('bug_reports')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        list.innerHTML = `<div class="p-5 text-center text-rose-500 text-sm">Lỗi tải báo cáo: ${error.message}</div>`;
+        return;
+    }
+
+    if (!bugs || bugs.length === 0) {
+        list.innerHTML = `<div class="p-8 text-center text-slate-400 text-sm">Chưa có báo cáo nào.</div>`;
+        return;
+    }
+
+    let html = '';
+    for (let b of bugs) {
+        const timeStr = timeAgo(b.created_at);
+        const statusBadge = b.status === 'resolved' 
+            ? `<span class="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded text-[10px] uppercase font-bold">Đã xử lý</span>`
+            : `<span class="bg-amber-100 text-amber-700 px-2 py-0.5 rounded text-[10px] uppercase font-bold">Chưa xử lý</span>`;
+
+        html += `
+        <div class="px-5 py-4 flex gap-3 hover:bg-slate-50 transition border-b border-slate-50 last:border-0">
+            <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-lg shrink-0">🐛</div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-1">
+                    <span class="font-bold text-sm text-slate-700">${b.author_name}</span>
+                    <span class="text-xs text-slate-400">· ${b.role}</span>
+                    ${statusBadge}
+                </div>
+                <p class="text-sm text-slate-600 whitespace-pre-wrap">${b.content}</p>
+                <p class="text-xs text-slate-400 mt-2">${timeStr}</p>
+            </div>
+            ${b.status === 'pending' ? `
+            <div>
+                <button onclick="resolveBug(${b.id})" class="text-xs text-indigo-600 hover:text-indigo-800 font-semibold px-2 py-1 border border-indigo-200 rounded hover:bg-indigo-50 transition">Xong</button>
+            </div>
+            ` : ''}
+        </div>
+        `;
+    }
+    list.innerHTML = html;
+}
+
+async function resolveBug(id) {
+    if(!confirm('Đánh dấu báo cáo này là "Đã xử lý"?')) return;
+    const { error } = await supabase.from('bug_reports').update({ status: 'resolved' }).eq('id', id);
+    if(error) alert('Lỗi: ' + error.message);
+    else renderBugReports();
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1438,7 +1657,10 @@ function switchTab(tab, silent) {
         if (btn) { btn.classList.toggle('active', t === tab); btn.classList.toggle('text-slate-400', t !== tab); btn.classList.toggle('text-slate-600', t === tab); }
     });
     if (!silent && tab === 'analytics') renderAnalytics(); // lazy init chart
-    if (!silent && tab === 'admin') renderAdminPanel();
+    if (!silent && tab === 'admin') {
+        renderAdminPanel();
+        renderBugReports();
+    }
 }
 
 // Viết hoa chữ đầu: dùng để map tab name → element id
@@ -1464,7 +1686,7 @@ function getLatestTime(s) {
 // Lấy danh sách SV mục tiêu cho thông báo (có cập nhật trong vòng 24h qua)
 function getTargetStudentsForNotif() {
     if (!State.students) return [];
-    
+
     const now = Date.now();
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -1474,7 +1696,7 @@ function getTargetStudentsForNotif() {
             const isRedOrYellow = (s.status === 'red' || s.status === 'yellow');
             const hasFeedback = (s.feedbacks && s.feedbacks.length > 0);
             if (!isRedOrYellow && !hasFeedback) return false;
-            
+
             // Check xem thời gian cập nhật có nằm trong 24h qua không
             const latestTime = getLatestTime(s);
             return (now - latestTime) <= ONE_DAY_MS;
@@ -1488,6 +1710,40 @@ function getTargetStudentsForNotif() {
             const gvStr = s.giang_vien.toLowerCase();
             return gvStr.includes(ucode) || gvStr.includes(uname);
         });
+    } else if (State.user && State.user.rawRole === 'CTSV') {
+        targetStudents = targetStudents.filter(s => {
+            const fbs = s.feedbacks || [];
+            
+            // Loại 1: Cần CTSV hỗ trợ (dựa trên feedback mới nhất)
+            let needsSupport = false;
+            if (fbs.length > 0) {
+                const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
+                if (latestFb.content && latestFb.content.includes('[CẦN CTSV HỖ TRỢ]')) {
+                    needsSupport = true;
+                }
+            }
+            
+            // Loại 2: Cập nhật của các trạng thái đỏ (vì base filter đã lọc <= 24h)
+            const isRedUpdate = (s.status === 'red');
+
+            // Loại 3: Các reply của GV/CNBM phản hồi lại comment của CTSV trong vòng 24h
+            let hasGvReplyToCtsv = false;
+            const ONE_DAY = 24 * 60 * 60 * 1000;
+            const currentTime = Date.now();
+            for (const f of fbs) {
+                if (['GV', 'CNBM'].includes(f.role) && f.parent_id) {
+                    if (currentTime - new Date(f.created_at).getTime() <= ONE_DAY) {
+                        const parent = fbs.find(p => p.id === f.parent_id);
+                        if (parent && parent.role === 'CTSV') {
+                            hasGvReplyToCtsv = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            return needsSupport || isRedUpdate || hasGvReplyToCtsv;
+        });
     }
     return targetStudents.sort((a, b) => getLatestTime(b) - getLatestTime(a));
 }
@@ -1495,7 +1751,7 @@ function getTargetStudentsForNotif() {
 function updateNotifBadge() {
     const targetStudents = getTargetStudentsForNotif();
     const badge = document.getElementById('notifBadge');
-    
+
     if (targetStudents.length > 0) {
         badge.textContent = targetStudents.length;
         badge.classList.remove('hidden');
@@ -1526,7 +1782,7 @@ function renderNotifPanel() {
 
     container.innerHTML = targetStudents.map(s => {
         const latestTime = getLatestTime(s);
-        
+
         const text = s.latestFbContent;
         const preview = text
             ? (text.length > 55 ? text.slice(0, 55) + '…' : text)
@@ -1892,4 +2148,253 @@ function copyFullTable() {
             document.body.removeChild(ta);
             showCopyToast(`✅ Đã copy toàn bộ bảng (${rowCount} dòng)!`);
         });
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 16 — BUG REPORTS & FEEDBACK CỦA USER
+// ══════════════════════════════════════════════════════════════════
+function openBugModal() {
+    const m = document.getElementById('bugReportModal');
+    if (!m) return;
+    m.classList.remove('hidden');
+    m.classList.add('flex');
+    setTimeout(() => {
+        m.classList.remove('opacity-0');
+        m.firstElementChild.classList.remove('scale-95');
+    }, 10);
+}
+
+function closeBugModal() {
+    const m = document.getElementById('bugReportModal');
+    if (!m) return;
+    m.classList.add('opacity-0');
+    m.firstElementChild.classList.add('scale-95');
+    setTimeout(() => {
+        m.classList.add('hidden');
+        m.classList.remove('flex');
+        document.getElementById('bugContent').value = '';
+    }, 200);
+}
+
+async function submitBugReport() {
+    const content = document.getElementById('bugContent').value.trim();
+    if (!content) {
+        alert('Vui lòng nhập nội dung báo lỗi hoặc góp ý!');
+        return;
+    }
+
+    const btn = document.getElementById('btnSubmitBug');
+    if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+    }
+
+    if (supabase) {
+        const { error } = await supabase.from('bug_reports').insert([{
+            author_code: State.user.code,
+            author_name: State.user.name,
+            role: State.user.role,
+            content: content
+        }]);
+
+        if (error) {
+            console.error('Lỗi khi gửi báo cáo:', error);
+            alert('Lỗi khi gửi báo cáo: ' + error.message);
+        } else {
+            alert('Cảm ơn bạn đã gửi báo cáo/góp ý!');
+            closeBugModal();
+        }
+    }
+
+    if (btn) {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// EXCEL IMPORT - STUDENT ROSTER
+// ══════════════════════════════════════════════════════════════════
+
+function closeExcelProgressModal() {
+    const m = document.getElementById('excelProgressModal');
+    if (!m) return;
+    m.classList.add('opacity-0');
+    m.firstElementChild.classList.add('scale-95');
+    setTimeout(() => {
+        m.classList.add('hidden');
+        m.classList.remove('flex');
+    }, 200);
+}
+
+async function handleExcelUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    // Reset input để lần sau chọn lại file cùng tên vẫn trigger change
+    event.target.value = '';
+
+    // Mở modal progress
+    const modal = document.getElementById('excelProgressModal');
+    const pText = document.getElementById('excelProgressText');
+    const pBar = document.getElementById('excelProgressBar');
+    const pPercent = document.getElementById('excelProgressPercent');
+    const pBtn = document.getElementById('excelProgressCloseBtn');
+    
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    setTimeout(() => {
+        modal.classList.remove('opacity-0');
+        modal.firstElementChild.classList.remove('scale-95');
+    }, 10);
+
+    pText.textContent = "Đang đọc file Excel...";
+    pBar.style.width = "5%";
+    pPercent.textContent = "5%";
+    pBtn.classList.add('hidden');
+    pBar.classList.remove('bg-rose-500', 'bg-indigo-500');
+    pBar.classList.add('bg-emerald-500');
+    pPercent.classList.remove('text-rose-600', 'text-indigo-600');
+    pPercent.classList.add('text-emerald-600');
+
+    try {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                
+                // Lấy sheet đầu tiên
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                
+                // Chuyển thành mảng các mảng (header: 1)
+                const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+                
+                if (rows.length < 2) {
+                    throw new Error("File Excel không có dữ liệu hoặc không đúng định dạng.");
+                }
+
+                pText.textContent = "Đang xử lý và gom nhóm sinh viên...";
+                pBar.style.width = "20%";
+                pPercent.textContent = "20%";
+
+                const studentsMap = {};
+
+                // Bỏ qua dòng đầu tiên (tiêu đề), lặp từ dòng 1
+                for (let i = 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    // Cấu trúc cột giả định: STT, MSSV, Tên, Lớp, Môn, Ngành, Giảng viên
+                    let roll = row[1];
+                    if (!roll) continue;
+                    roll = String(roll).trim();
+
+                    const name = String(row[2] || '').trim();
+                    const group = String(row[3] || '').trim();
+                    const subject = String(row[4] || '').trim();
+                    const nganh = String(row[5] || '').trim();
+                    const teacher = String(row[6] || '').trim();
+
+                    if (!studentsMap[roll]) {
+                        studentsMap[roll] = {
+                            mssv: roll,
+                            ho_ten: name,
+                            lop_set: new Set(),
+                            ma_mon_set: new Set(),
+                            giang_vien_set: new Set(),
+                            nganh_set: new Set()
+                        };
+                    }
+
+                    if (group) studentsMap[roll].lop_set.add(group);
+                    if (subject) studentsMap[roll].ma_mon_set.add(subject);
+                    if (teacher) studentsMap[roll].giang_vien_set.add(teacher);
+                    if (nganh) studentsMap[roll].nganh_set.add(nganh);
+                }
+
+                // Chuyển Set thành chuỗi phân cách bởi dấu phẩy
+                const finalRows = Object.values(studentsMap).map(st => {
+                    const sortedLop = Array.from(st.lop_set).sort().join(', ');
+                    const sortedMon = Array.from(st.ma_mon_set).sort().join(', ');
+                    const sortedGV = Array.from(st.giang_vien_set).sort().join(', ');
+                    const sortedNganh = Array.from(st.nganh_set).sort().join(', ');
+
+                    return {
+                        mssv: st.mssv,
+                        ho_ten: st.ho_ten,
+                        lop: sortedLop || null,
+                        ma_mon: sortedMon || null,
+                        giang_vien: sortedGV || null,
+                        nganh: sortedNganh || null
+                    };
+                });
+
+                if (finalRows.length === 0) {
+                    throw new Error("Không tìm thấy sinh viên hợp lệ nào trong file.");
+                }
+
+                pText.textContent = `Chuẩn bị tải lên ${finalRows.length} sinh viên...`;
+                pBar.style.width = "30%";
+                pPercent.textContent = "30%";
+
+                // Batch upload (mỗi batch 50 records)
+                const BATCH_SIZE = 50;
+                let successCount = 0;
+                const totalBatches = Math.ceil(finalRows.length / BATCH_SIZE);
+
+                for (let i = 0; i < finalRows.length; i += BATCH_SIZE) {
+                    const batch = finalRows.slice(i, i + BATCH_SIZE);
+                    
+                    const { error } = await supabase
+                        .from('student_roster')
+                        .upsert(batch, { onConflict: 'mssv' });
+
+                    if (error) {
+                        console.error('Lỗi khi tải dữ liệu lên Supabase:', error);
+                        throw new Error(`Lỗi tải lên dữ liệu: ${error.message}`);
+                    }
+
+                    successCount += batch.length;
+                    
+                    // Cập nhật progress bar
+                    const percent = 30 + Math.floor((successCount / finalRows.length) * 70);
+                    pBar.style.width = `${percent}%`;
+                    pPercent.textContent = `${percent}%`;
+                    pText.textContent = `Đã lưu ${successCount} / ${finalRows.length} sinh viên...`;
+                }
+
+                pText.textContent = `🎉 Đã nhập thành công ${successCount} sinh viên!`;
+                pBar.classList.replace('bg-emerald-500', 'bg-indigo-500');
+                pPercent.classList.replace('text-emerald-600', 'text-indigo-600');
+                pBtn.classList.remove('hidden');
+
+                // Tải lại roster cache trong background để cập nhật danh sách
+                rosterLoaded = false;
+                await loadRoster();
+
+            } catch (err) {
+                console.error(err);
+                pText.textContent = `❌ Lỗi: ${err.message}`;
+                pBar.classList.replace('bg-emerald-500', 'bg-rose-500');
+                pPercent.classList.replace('text-emerald-600', 'text-rose-600');
+                pBtn.classList.remove('hidden');
+            }
+        };
+        
+        reader.onerror = (err) => {
+            console.error(err);
+            pText.textContent = "❌ Lỗi không thể đọc file Excel.";
+            pBar.classList.replace('bg-emerald-500', 'bg-rose-500');
+            pPercent.classList.replace('text-emerald-600', 'text-rose-600');
+            pBtn.classList.remove('hidden');
+        };
+
+        reader.readAsArrayBuffer(file);
+    } catch (err) {
+        console.error(err);
+        pText.textContent = `❌ Lỗi hệ thống: ${err.message}`;
+        pBar.classList.replace('bg-emerald-500', 'bg-rose-500');
+        pPercent.classList.replace('text-emerald-600', 'text-rose-600');
+        pBtn.classList.remove('hidden');
+    }
 }
