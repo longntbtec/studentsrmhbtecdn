@@ -311,7 +311,18 @@ function populateClassFilter() {
     }
 
     const set = new Set();
+    const isGV = State.user && State.user.rawRole === 'GV';
+    const ucode = isGV ? State.user.code.toLowerCase() : '';
+    const uname = isGV ? State.user.name.toLowerCase() : '';
+
     const processRoster = (r) => {
+        // BẢO MẬT: Giảng viên chỉ được lấy những lớp của các sinh viên mà họ có dạy
+        if (isGV) {
+            if (!r.giang_vien) return;
+            const gvStr = r.giang_vien.toLowerCase();
+            if (!gvStr.includes(ucode) && !gvStr.includes(uname)) return;
+        }
+
         const sMajors = (r.nganh || '').split(',').map(m => m.trim()).filter(Boolean);
         // Lọc theo mảng ngành nếu là CNBM/GV, ngược lại lọc theo majorF từ dropdown
         if (userMajors.length > 0) {
