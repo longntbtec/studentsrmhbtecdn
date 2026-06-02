@@ -271,8 +271,9 @@ async function initDashboard() {
         };
     });
 
-    // Lọc sinh viên theo ngành (nếu user là GV/CNBM và có cấu hình ngành - có thể nhiều ngành cách nhau bởi dấu phẩy)
-    if (['GV', 'CNBM'].includes(State.user.rawRole) && State.user.major) {
+    // Lọc sinh viên theo ngành (nếu user là CNBM và có cấu hình ngành - có thể nhiều ngành cách nhau bởi dấu phẩy)
+    // Lưu ý: GV (Giảng viên) không bị lọc theo ngành vì họ có thể dạy sinh viên từ nhiều ngành khác nhau (VD: GV English dạy SV IT)
+    if (State.user && State.user.rawRole === 'CNBM' && State.user.major) {
         const userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
         processedStudents = processedStudents.filter(s => {
             const sMajors = (s.nganh || '').split(',').map(m => m.trim()).filter(Boolean);
@@ -303,9 +304,9 @@ function updateStats() {
 function populateClassFilter() {
     const majorF = document.getElementById('majorFilter') ? document.getElementById('majorFilter').value : 'all';
 
-    // Nếu là CNBM/GV thì lấy danh sách ngành quản lý
+    // Nếu là CNBM thì lấy danh sách ngành quản lý (GV không bị giới hạn ngành)
     let userMajors = [];
-    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
+    if (State.user && State.user.rawRole === 'CNBM' && State.user.major) {
         userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
     }
 
