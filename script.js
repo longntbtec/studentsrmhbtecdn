@@ -231,7 +231,7 @@ async function initDashboard() {
         .select(`
             *,
             student_classes(class_name, author_code),
-            feedbacks(content, created_at)
+            feedbacks(id, content, created_at, role, author_code, reactions, parent_id)
         `)
         .order('updated_at', { ascending: false });
 
@@ -679,10 +679,8 @@ function fbCard(fb, isReply) {
         escalateBadge = `<span class="bg-emerald-100 text-emerald-700 text-[10px] px-2 py-0.5 rounded uppercase font-bold mr-2 inline-flex items-center gap-1">✅ Đã xử lý</span>`;
     }
 
-    let noteBadge = '';
     if (finalContent.includes('[GHI CHÚ XỬ LÝ]')) {
         finalContent = finalContent.replace('[GHI CHÚ XỬ LÝ]', '').trim();
-        noteBadge = `<span class="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded uppercase font-bold mb-1 inline-block">Ghi chú từ CTSV</span><br>`;
     }
 
     const canEscalate = !isReply && !escalateBadge && (
@@ -701,13 +699,13 @@ function fbCard(fb, isReply) {
                 </div>
                 <span class="text-xs text-slate-400">${t}</span>
             </div>
-            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${noteBadge}${finalContent}</p>
+            <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${finalContent}</p>
             <div class="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-white/60">
                 ${resolveBtn}
                 <!-- Nút "Trả lời" chỉ hiện ở feedback gốc, không hiện ở reply -->
                 ${!isReply ? `<button onclick="replyTo(${fb.id},'${fb.author_name}')" class="text-xs text-slate-400 hover:text-indigo-600 transition">↪️ Trả lời</button>` : ''}
                 <!-- Nút "Cùng ý kiến" chỉ hiện ở feedback gốc, không phải của chính mình, và chỉ dành cho GV/CNBM -->
-                ${!isReply && ['GV', 'CNBM'].includes(State.user.rawRole) && fb.author_code !== State.user.code && !agrees.some(a => a.code === State.user.code) ? `<button onclick="agreeWithFeedback(${fb.id})" class="text-xs text-slate-400 hover:text-emerald-600 transition">🤝 Cùng comment</button>` : ''}
+                ${!isReply && ['GV', 'CNBM'].includes(State.user.rawRole) && !['CTSV', 'Admin'].includes(fb.role) && fb.author_code !== State.user.code && !agrees.some(a => a.code === State.user.code) ? `<button onclick="agreeWithFeedback(${fb.id})" class="text-xs text-slate-400 hover:text-emerald-600 transition">🤝 Cùng comment</button>` : ''}
                 <!-- Nút "Báo CTSV hỗ trợ" (CNBM báo cáo hộ GV, hoặc GV tự báo cáo bài của mình) -->
                 ${canEscalate ? `<button onclick="escalateFeedback(${fb.id}, ${fb.student_id})" class="text-xs text-rose-500 hover:text-rose-700 transition">📢 Nhờ CTSV hỗ trợ</button>` : ''}
                 <!-- Nút reaction: tất cả mọi người đều có quyền thả tim -->
@@ -851,6 +849,21 @@ async function doSend(content) {
         content = '[CẦN CTSV HỖ TRỢ] ' + content;
     }
 
+    // Nếu CTSV hoặc Admin viết comment gốc, tự động giải quyết các yêu cầu hỗ trợ cũ
+    if ((State.user.rawRole === 'CTSV' || State.user.rawRole === 'Admin') && !State.replyParentId) {
+        const { data: fbs } = await supabase.from('feedbacks')
+            .select('id, content')
+            .eq('student_id', State.currentStudentId)
+            .like('content', '%[CẦN CTSV HỖ TRỢ]%');
+        
+        if (fbs && fbs.length > 0) {
+            for (let fb of fbs) {
+                const newContent = fb.content.replace('[CẦN CTSV HỖ TRỢ]', '[CTSV ĐÃ XỬ LÝ]');
+                await supabase.from('feedbacks').update({ content: newContent }).eq('id', fb.id);
+            }
+        }
+    }
+
     // Tính timestamp hiện tại (Cập nhật updatedAt cho thẻ SV)
     const nowISO = new Date().toISOString();
 
@@ -927,6 +940,7 @@ async function toggleReaction(fbId) {
 
     await supabase.from('feedbacks').update({ reactions: reactions }).eq('id', fbId);
     await renderTimeline(State.currentStudentId); // re-render 
+    await initDashboard(); // refresh notifications and dashboard
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1697,6 +1711,19 @@ function getTargetStudentsForNotif() {
             const hasFeedback = (s.feedbacks && s.feedbacks.length > 0);
             if (!isRedOrYellow && !hasFeedback) return false;
 
+            // ĐÃ ĐỌC (Toàn cục): Nếu user hiện tại đã thả tim vào feedback MỚI NHẤT 
+            // hoặc chính họ là người viết feedback mới nhất, thì tắt noti cho user này.
+            if (s.feedbacks && s.feedbacks.length > 0 && State.user) {
+                const latestFb = s.feedbacks.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
+                const isWithin24h = (now - new Date(latestFb.created_at).getTime()) <= ONE_DAY_MS;
+                const hasReacted = latestFb.reactions && latestFb.reactions.some(r => r.code === State.user.code);
+                const isAuthor = latestFb.author_code === State.user.code;
+
+                if (isWithin24h && (hasReacted || isAuthor)) {
+                    return false;
+                }
+            }
+
             // Check xem thời gian cập nhật có nằm trong 24h qua không
             const latestTime = getLatestTime(s);
             return (now - latestTime) <= ONE_DAY_MS;
@@ -1713,6 +1740,15 @@ function getTargetStudentsForNotif() {
     } else if (State.user && State.user.rawRole === 'CTSV') {
         targetStudents = targetStudents.filter(s => {
             const fbs = s.feedbacks || [];
+            
+            // ĐÃ ĐỌC: Nếu thao tác mới nhất trên sinh viên này là của CTSV và trong vòng 24h, thì xem như CTSV đã xử lý/đọc
+            if (fbs.length > 0) {
+                const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
+                const isWithin24h = (Date.now() - new Date(latestFb.created_at).getTime()) <= (24 * 60 * 60 * 1000);
+                if (latestFb.role === 'CTSV' && isWithin24h) {
+                    return false;
+                }
+            }
             
             // Loại 1: Cần CTSV hỗ trợ (dựa trên feedback mới nhất)
             let needsSupport = false;
