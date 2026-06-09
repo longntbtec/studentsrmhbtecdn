@@ -773,8 +773,83 @@ async function sendFeedback() {
     const content = document.getElementById('feedbackInput').value.trim();
     if (!content || !State.currentStudentId) return;
 
+    let newStatusToSet = null;
+
+    const s = State.students.find(x => x.id === State.currentStudentId);
+    if (s && !State.replyParentId && ['GV', 'CNBM'].includes(State.user.rawRole) && ['green', 'yellow'].includes(s.status || 'green')) {
+        const currentStatus = s.status || 'green';
+        const currentStatusName = currentStatus === 'green' ? '🟢 Ổn định' : '🟡 Theo dõi';
+        
+        newStatusToSet = await new Promise((resolve) => {
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay active';
+            overlay.style.zIndex = '9999';
+            
+            let optionsHtml = '';
+            const statuses = [
+                { id: 'red', label: '🔴 Cảnh báo', bg: 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100' },
+                { id: 'yellow', label: '🟡 Theo dõi', bg: 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100' },
+                { id: 'green', label: '🟢 Ổn định', bg: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100' }
+            ];
+            
+            statuses.forEach(st => {
+                if (st.id !== currentStatus) {
+                    optionsHtml += `<button class="w-full text-left px-4 py-3 border rounded-xl transition mb-3 font-bold ${st.bg}" onclick="window.resolveStatusChange('${st.id}')">Chuyển sang ${st.label}</button>`;
+                }
+            });
+
+            overlay.innerHTML = `
+                <div class="bg-white w-full max-w-sm rounded-2xl p-6 shadow-xl transform transition-all relative mx-4">
+                    <button onclick="window.resolveStatusChange('CANCEL')" class="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition text-2xl leading-none">&times;</button>
+                    <h3 class="text-lg font-black text-slate-800 mb-2 pr-6">Thay đổi trạng thái?</h3>
+                    <p class="text-sm text-slate-500 mb-4">Trạng thái hiện tại đang là <span class="font-bold text-slate-700">${currentStatusName}</span>. Bạn có muốn đổi trạng thái cho sinh viên này cùng với bình luận không?</p>
+                    ${optionsHtml}
+                    <button class="w-full mt-1 text-slate-600 font-bold bg-slate-50 border-slate-200 hover:bg-slate-100 py-3 px-4 rounded-xl border transition" onclick="window.resolveStatusChange(null)">Chỉ gửi bình luận (Giữ nguyên)</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            window.resolveStatusChange = (status) => {
+                document.body.removeChild(overlay);
+                delete window.resolveStatusChange;
+                resolve(status);
+            };
+        });
+    }
+
+    if (newStatusToSet === 'CANCEL') return;
+
     // Giảng viên tiếp theo không cần nhập lớp đang dạy nữa vì thông tin lớp đã hiện đầy đủ từ danh sách kỳ học.
     await doSend(content);
+
+    if (newStatusToSet) {
+        const nowISO = new Date().toISOString();
+        const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[newStatusToSet];
+        const text = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[newStatusToSet];
+
+        await supabase.from('students')
+            .update({ status: newStatusToSet, updated_at: nowISO })
+            .eq('id', State.currentStudentId);
+
+        await supabase.from('feedbacks').insert([{
+            student_id: State.currentStudentId,
+            role: State.user.rawRole,
+            author_name: State.user.name,
+            author_code: State.user.code,
+            content: `[${emoji} ${text}] Cập nhật trạng thái từ phản hồi: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`,
+            parent_id: null
+        }]);
+
+        const sToUpdate = State.students.find(x => x.id === State.currentStudentId);
+        if (sToUpdate) {
+            sToUpdate.status = newStatusToSet;
+            document.getElementById('modalMeta').textContent =
+                `${sToUpdate.mssv} · ${sToUpdate.lop || 'N/A'} · ${emoji} ${text}`;
+        }
+        
+        await renderTimeline(State.currentStudentId);
+        await initDashboard();
+    }
 }
 
 // Xử lý CTSV Đánh dấu đã giải quyết
