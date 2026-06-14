@@ -819,8 +819,15 @@ async function sendFeedback() {
 
     if (newStatusToSet === 'CANCEL') return;
 
+    let finalContent = content;
+    if (newStatusToSet) {
+        const emoji = { green: '🟢', yellow: '🟡', red: '🔴' }[newStatusToSet];
+        const text = { green: 'Ổn định', yellow: 'Theo dõi', red: 'Cảnh báo' }[newStatusToSet];
+        finalContent = `[${emoji} ${text}] ` + content;
+    }
+
     // Giảng viên tiếp theo không cần nhập lớp đang dạy nữa vì thông tin lớp đã hiện đầy đủ từ danh sách kỳ học.
-    await doSend(content);
+    await doSend(finalContent);
 
     if (newStatusToSet) {
         const nowISO = new Date().toISOString();
@@ -830,15 +837,6 @@ async function sendFeedback() {
         await supabase.from('students')
             .update({ status: newStatusToSet, updated_at: nowISO })
             .eq('id', State.currentStudentId);
-
-        await supabase.from('feedbacks').insert([{
-            student_id: State.currentStudentId,
-            role: State.user.rawRole,
-            author_name: State.user.name,
-            author_code: State.user.code,
-            content: `[${emoji} ${text}] Cập nhật trạng thái từ phản hồi: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`,
-            parent_id: null
-        }]);
 
         const sToUpdate = State.students.find(x => x.id === State.currentStudentId);
         if (sToUpdate) {
