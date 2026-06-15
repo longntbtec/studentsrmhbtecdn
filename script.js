@@ -702,6 +702,8 @@ function fbCard(fb, isReply) {
             <p class="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">${finalContent}</p>
             <div class="flex items-center justify-end gap-3 mt-2 pt-2 border-t border-white/60">
                 ${resolveBtn}
+                <!-- Nút "Xóa" dành cho Admin -->
+                ${State.user && State.user.rawRole === 'Admin' ? `<button onclick="deleteFeedback(${fb.id})" class="text-xs text-rose-500 hover:text-rose-700 transition" title="Xóa bình luận này">🗑️ Xóa</button>` : ''}
                 <!-- Nút "Trả lời" chỉ hiện ở feedback gốc, không hiện ở reply -->
                 ${!isReply ? `<button onclick="replyTo(${fb.id},'${fb.author_name}')" class="text-xs text-slate-400 hover:text-indigo-600 transition">↪️ Trả lời</button>` : ''}
                 <!-- Nút "Cùng ý kiến" chỉ hiện ở feedback gốc, không phải của chính mình, và chỉ dành cho GV/CNBM -->
@@ -1015,6 +1017,19 @@ async function toggleReaction(fbId) {
     await renderTimeline(State.currentStudentId); // re-render 
     await initDashboard(); // refresh notifications and dashboard
 }
+
+window.deleteFeedback = async (fbId) => {
+    if (!confirm('Bạn có chắc chắn muốn xóa bình luận này? Hành động này không thể hoàn tác.')) return;
+    
+    const { error } = await supabase.from('feedbacks').delete().eq('id', fbId);
+    if (error) {
+        alert('Lỗi khi xóa bình luận: ' + error.message);
+        return;
+    }
+    
+    await renderTimeline(State.currentStudentId);
+    await initDashboard();
+};
 
 // ══════════════════════════════════════════════════════════════════
 //  SECTION 7 — STATUS UPDATE (Cập nhật trạng thái sinh viên)
@@ -1404,13 +1419,19 @@ function renderAnalytics() {
 
     // ── Cập nhật 4 thẻ KPI ──
     const kpiTotal = document.getElementById('kpiTotal');
-    const kpiFb = document.getElementById('kpiFeedback');
+    const kpiG = document.getElementById('kpiGreen');
     const kpiY = document.getElementById('kpiYellow');
     const kpiR = document.getElementById('kpiRed');
+    
+    const realGreen = Math.max(0, totalRoster - yAll - rAll);
+    const gPct = totalRoster > 0 ? ((realGreen / totalRoster) * 100).toFixed(1) : '0.0';
+    const yPct = totalRoster > 0 ? ((yAll / totalRoster) * 100).toFixed(1) : '0.0';
+    const rPct = totalRoster > 0 ? ((rAll / totalRoster) * 100).toFixed(1) : '0.0';
+
     if (kpiTotal) kpiTotal.textContent = totalRoster;
-    if (kpiFb) kpiFb.textContent = studentsWithFeedback;
-    if (kpiY) kpiY.textContent = yAll;
-    if (kpiR) kpiR.textContent = rAll;
+    if (kpiG) kpiG.innerHTML = `${realGreen} <span class="text-sm font-semibold text-emerald-600/70 opacity-80">(${gPct}%)</span>`;
+    if (kpiY) kpiY.innerHTML = `${yAll} <span class="text-sm font-semibold text-amber-500/70 opacity-80">(${yPct}%)</span>`;
+    if (kpiR) kpiR.innerHTML = `${rAll} <span class="text-sm font-semibold text-rose-600/70 opacity-80">(${rPct}%)</span>`;
 
     // ── Plugin hiển thị số % ở giữa donut ──
     const centerTextPlugin = {
