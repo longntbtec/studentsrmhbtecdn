@@ -521,9 +521,24 @@ function studentCard(s) {
         }
     }
 
+    const isCtsv = State.user && State.user.rawRole === 'CTSV';
+    let needsCtsvAttention = false;
+    if (isCtsv && s.feedbacks && s.feedbacks.length > 0) {
+        const latestFb = s.feedbacks[0];
+        const isReply = latestFb.parent_id != null;
+        const hasEscalate = latestFb.content && latestFb.content.includes('[CẦN CTSV HỖ TRỢ]');
+        if (latestFb.role !== 'CTSV' && !isReply && (s.status === 'red' || hasEscalate)) {
+            needsCtsvAttention = true;
+        }
+    }
+
+    const cardClasses = needsCtsvAttention 
+        ? "bg-indigo-50/40 rounded-xl border-2 border-indigo-400 shadow-md flex overflow-hidden hover:shadow-lg transition-all cursor-pointer group"
+        : "bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group";
+
     return `
     <div onclick="openStudentModal(${s.id})"
-        class="bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group">
+        class="${cardClasses}">
         <!-- Dải màu trạng thái bên trái -->
         <div class="${strip} w-1.5 shrink-0"></div>
         <div class="flex-1 p-3.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 min-w-0">
@@ -1805,6 +1820,9 @@ function getTargetStudentsForNotif() {
             const hasFeedback = (s.feedbacks && s.feedbacks.length > 0);
             if (!isRedOrYellow && !hasFeedback) return false;
 
+            // VỚI CTSV: KHÔNG CẦN CHECK 24H VÀ CÁC LOGIC ĐÃ ĐỌC TOÀN CỤC BÊN DƯỚI
+            if (State.user && State.user.rawRole === 'CTSV') return true;
+
             // ĐÃ ĐỌC (Toàn cục): Nếu user hiện tại đã thả tim vào feedback MỚI NHẤT 
             // hoặc chính họ là người viết feedback mới nhất, thì tắt noti cho user này.
             if (s.feedbacks && s.feedbacks.length > 0 && State.user) {
@@ -1834,45 +1852,25 @@ function getTargetStudentsForNotif() {
     } else if (State.user && State.user.rawRole === 'CTSV') {
         targetStudents = targetStudents.filter(s => {
             const fbs = s.feedbacks || [];
+            if (fbs.length === 0) return false;
             
-            // ĐÃ ĐỌC: Nếu thao tác mới nhất trên sinh viên này là của CTSV và trong vòng 24h, thì xem như CTSV đã xử lý/đọc
-            if (fbs.length > 0) {
-                const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
-                const isWithin24h = (Date.now() - new Date(latestFb.created_at).getTime()) <= (24 * 60 * 60 * 1000);
-                if (latestFb.role === 'CTSV' && isWithin24h) {
-                    return false;
-                }
-            }
+            const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
             
-            // Loại 1: Cần CTSV hỗ trợ (dựa trên feedback mới nhất)
-            let needsSupport = false;
-            if (fbs.length > 0) {
-                const latestFb = fbs.reduce((prev, current) => (prev.created_at > current.created_at) ? prev : current);
-                if (latestFb.content && latestFb.content.includes('[CẦN CTSV HỖ TRỢ]')) {
-                    needsSupport = true;
-                }
-            }
+            // Nếu thao tác mới nhất trên sinh viên này là của CTSV, thì xem như CTSV đã xử lý/đọc
+            if (latestFb.role === 'CTSV') return false;
             
-            // Loại 2: Cập nhật của các trạng thái đỏ (vì base filter đã lọc <= 24h)
-            const isRedUpdate = (s.status === 'red');
+            // CTSV cũng có thể tắt noti bằng cách thả tim vào comment mới nhất
+            if (latestFb.reactions && latestFb.reactions.some(r => r.code === State.user.code)) return false;
+            
+            // ĐIỀU CHỈNH: Nếu comment mới nhất chỉ là reply (của người khác) -> Bỏ qua, không thông báo cho CTSV
+            if (latestFb.parent_id != null) return false;
 
-            // Loại 3: Các reply của GV/CNBM phản hồi lại comment của CTSV trong vòng 24h
-            let hasGvReplyToCtsv = false;
-            const ONE_DAY = 24 * 60 * 60 * 1000;
-            const currentTime = Date.now();
-            for (const f of fbs) {
-                if (['GV', 'CNBM'].includes(f.role) && f.parent_id) {
-                    if (currentTime - new Date(f.created_at).getTime() <= ONE_DAY) {
-                        const parent = fbs.find(p => p.id === f.parent_id);
-                        if (parent && parent.role === 'CTSV') {
-                            hasGvReplyToCtsv = true;
-                            break;
-                        }
-                    }
-                }
-            }
+            const hasEscalate = latestFb.content && latestFb.content.includes('[CẦN CTSV HỖ TRỢ]');
             
-            return needsSupport || isRedUpdate || hasGvReplyToCtsv;
+            // ĐIỀU CHỈNH: Trạng thái Vàng (hoặc Xanh) mà KHÔNG CÓ yêu cầu hỗ trợ -> Bỏ qua
+            if (s.status !== 'red' && !hasEscalate) return false;
+
+            return true;
         });
     }
     return targetStudents.sort((a, b) => getLatestTime(b) - getLatestTime(a));
