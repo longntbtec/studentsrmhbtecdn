@@ -597,7 +597,14 @@ function studentCard(s) {
             // Chỉ xét cái mới nhất
             const latestCtsvFb = ctsvFbs.sort((a,b) => new Date(b.created_at) - new Date(a.created_at))[0];
             const hasReacted = latestCtsvFb.reactions && latestCtsvFb.reactions.some(r => r.code === State.user.code);
-            if (!hasReacted) {
+            
+            // Check nếu user (GV/CNBM) đã comment hoặc reply SAU feedback của CTSV
+            const hasRepliedOrCommentedAfter = s.feedbacks.some(f => 
+                f.author_code === State.user.code && 
+                new Date(f.created_at) > new Date(latestCtsvFb.created_at)
+            );
+
+            if (!hasReacted && !hasRepliedOrCommentedAfter) {
                 needsGvCnbmAttention = true;
             }
         }
@@ -1905,8 +1912,15 @@ function getTargetStudentsForNotif() {
                      if (ctsvFbs.length > 0) {
                          const latestCtsvFb = ctsvFbs.sort((a,b) => new Date(b.created_at) - new Date(a.created_at))[0];
                          const hasReacted = latestCtsvFb.reactions && latestCtsvFb.reactions.some(r => r.code === State.user.code);
-                         // Nếu feedback gốc mới nhất từ CTSV chưa được thả tim, BẮT BUỘC phải hiện thông báo
-                         if (!hasReacted) return true;
+                         
+                         // Check nếu user (GV/CNBM) đã comment hoặc reply SAU feedback của CTSV
+                         const hasRepliedOrCommentedAfter = s.feedbacks.some(f => 
+                             f.author_code === State.user.code && 
+                             new Date(f.created_at) > new Date(latestCtsvFb.created_at)
+                         );
+
+                         // Nếu feedback gốc mới nhất từ CTSV chưa được thả tim VÀ user chưa có phản hồi nào sau đó
+                         if (!hasReacted && !hasRepliedOrCommentedAfter) return true;
                      }
                 }
             }
