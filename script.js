@@ -265,7 +265,7 @@ async function initDashboard() {
         const gvStr = Array.from(gvSet).join(', ');
 
         // Lấy feedback gần nhất làm preview
-        const fbs = (s.feedbacks || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        const fbs = [...(s.feedbacks || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
         return {
             ...s,
@@ -298,12 +298,63 @@ async function initDashboard() {
 }
 
 // Đếm số SV theo từng trạng thái và cập nhật vào 4 thẻ stat
+// Tính toán số liệu thống kê tổng thể cho user hiện tại (Unique SV + đúng Role)
+function getUserGlobalStats() {
+    let userMajors = [];
+    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
+        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
+    }
+
+    const isGV = State.user && State.user.rawRole === 'GV';
+    const isCNBM = State.user && State.user.rawRole === 'CNBM';
+    const ucode = isGV ? State.user.code.toLowerCase() : '';
+    const uname = isGV ? State.user.name.toLowerCase() : '';
+
+    // 1. Tính tổng SV thực tế từ Roster (lọc unique)
+    const rosterMssvSet = new Set();
+    if (rosterCache && rosterCache.length > 0) {
+        rosterCache.forEach(s => {
+            if (isGV) {
+                 if (!s.giang_vien) return;
+                 const gvStr = s.giang_vien.toLowerCase();
+                 if (!gvStr.includes(ucode) && !gvStr.includes(uname)) return;
+            } else if (isCNBM) {
+                 if (!s.nganh) return;
+                 const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
+                 if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
+            }
+            rosterMssvSet.add(s.mssv.toLowerCase());
+        });
+    }
+    const totalRoster = rosterMssvSet.size;
+
+    // 2. Tính số lượng Cảnh báo / Theo dõi từ State.students
+    let accessibleStudents = State.students || [];
+    if (isGV) {
+        accessibleStudents = accessibleStudents.filter(s => {
+            if (!s.giang_vien) return false;
+            const gvStr = s.giang_vien.toLowerCase();
+            return gvStr.includes(ucode) || gvStr.includes(uname);
+        });
+    }
+
+    const yAll = accessibleStudents.filter(s => s.status === 'yellow').length;
+    const rAll = accessibleStudents.filter(s => s.status === 'red').length;
+    const studentsWithFeedback = accessibleStudents.length;
+
+    // Fallback nếu không có Roster thì dùng số lượng SV có feedback
+    const finalTotal = Math.max(totalRoster, studentsWithFeedback);
+    const gAll = Math.max(0, finalTotal - yAll - rAll);
+
+    return { total: finalTotal, green: gAll, yellow: yAll, red: rAll, studentsWithFeedback };
+}
+
 function updateStats() {
-    const all = State.students;
-    document.getElementById('cntTotal').textContent = all.length;
-    document.getElementById('cntGreen').textContent = all.filter(s => (s.status || 'green') === 'green').length;
-    document.getElementById('cntYellow').textContent = all.filter(s => s.status === 'yellow').length;
-    document.getElementById('cntRed').textContent = all.filter(s => s.status === 'red').length;
+    const stats = getUserGlobalStats();
+    document.getElementById('cntTotal').textContent = stats.total;
+    document.getElementById('cntGreen').textContent = stats.green;
+    document.getElementById('cntYellow').textContent = stats.yellow;
+    document.getElementById('cntRed').textContent = stats.red;
 }
 
 // Lấy tất cả tên lớp từ DB.students (SV có thể thuộc nhiều lớp),
@@ -521,6 +572,10 @@ function studentCard(s) {
         }
     }
 
+    const t1 = s.updated_at ? new Date(s.updated_at).getTime() : 0;
+    const t2 = s.latestFbCreatedAt ? new Date(s.latestFbCreatedAt).getTime() : 0;
+    const isInactive15Days = (Date.now() - Math.max(t1, t2)) > 15 * 24 * 60 * 60 * 1000;
+
     const isCtsv = State.user && State.user.rawRole === 'CTSV';
     let needsCtsvAttention = false;
     if (isCtsv && s.feedbacks && s.feedbacks.length > 0) {
@@ -532,9 +587,28 @@ function studentCard(s) {
         }
     }
 
-    const cardClasses = needsCtsvAttention 
-        ? "bg-indigo-50/40 rounded-xl border-2 border-indigo-400 shadow-md flex overflow-hidden hover:shadow-lg transition-all cursor-pointer group"
-        : "bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group";
+    const isGvCnbm = State.user && ['GV', 'CNBM'].includes(State.user.rawRole);
+    let needsGvCnbmAttention = false;
+    
+    if (!isInactive15Days && isGvCnbm && s.feedbacks && s.feedbacks.length > 0) {
+        // Lọc lấy các feedback gốc từ CTSV
+        const ctsvFbs = s.feedbacks.filter(f => f.role === 'CTSV' && !f.parent_id);
+        if (ctsvFbs.length > 0) {
+            // Chỉ xét cái mới nhất
+            const latestCtsvFb = ctsvFbs.sort((a,b) => new Date(b.created_at) - new Date(a.created_at))[0];
+            const hasReacted = latestCtsvFb.reactions && latestCtsvFb.reactions.some(r => r.code === State.user.code);
+            if (!hasReacted) {
+                needsGvCnbmAttention = true;
+            }
+        }
+    }
+
+    let cardClasses = "bg-white rounded-xl border border-slate-100 shadow-sm flex overflow-hidden hover:shadow-md transition-all cursor-pointer group";
+    if (needsCtsvAttention) {
+        cardClasses = "bg-indigo-50/40 rounded-xl border-2 border-indigo-400 shadow-md flex overflow-hidden hover:shadow-lg transition-all cursor-pointer group";
+    } else if (needsGvCnbmAttention) {
+        cardClasses = "bg-amber-50/40 rounded-xl border-2 border-amber-400 shadow-md flex overflow-hidden hover:shadow-lg transition-all cursor-pointer group";
+    }
 
     return `
     <div onclick="openStudentModal(${s.id})"
@@ -665,6 +739,11 @@ function fbCard(fb, isReply) {
     const isMyFb = fb.author_code === State.user.code;                        // đây là feedback của mình?
     const rCount = likes.length;
 
+    let reactionNamesTitle = '';
+    if (rCount > 0) {
+        reactionNamesTitle = ('Đã thả tim:\n' + likes.map(r => r.name || 'Ẩn danh').join('\n')).replace(/"/g, '&quot;');
+    }
+
     const acc = fb.accounts;
     const roleLabel = acc
         ? (acc.major ? `${acc.role} · ${acc.major}` : acc.role)
@@ -725,8 +804,12 @@ function fbCard(fb, isReply) {
                 ${!isReply && ['GV', 'CNBM'].includes(State.user.rawRole) && !['CTSV', 'Admin'].includes(fb.role) && fb.author_code !== State.user.code && !agrees.some(a => a.code === State.user.code) ? `<button onclick="agreeWithFeedback(${fb.id})" class="text-xs text-slate-400 hover:text-emerald-600 transition">🤝 Cùng comment</button>` : ''}
                 <!-- Nút "Báo CTSV hỗ trợ" (CNBM báo cáo hộ GV, hoặc GV tự báo cáo bài của mình) -->
                 ${canEscalate ? `<button onclick="escalateFeedback(${fb.id}, ${fb.student_id})" class="text-xs text-rose-500 hover:text-rose-700 transition">📢 Nhờ CTSV hỗ trợ</button>` : ''}
+                
+                <!-- Nhắc nhở thả tim cho GV/CNBM -->
+                ${!isReply && !reacted && fb.role === 'CTSV' && State.user && ['GV', 'CNBM'].includes(State.user.rawRole) ? `<span class="text-[11px] text-amber-500 font-medium animate-pulse flex items-center mr-1">Bấm thả tim để tắt thông báo ➡️</span>` : ''}
+
                 <!-- Nút reaction: tất cả mọi người đều có quyền thả tim -->
-                <button onclick="toggleReaction(${fb.id})" class="reaction-btn ${reacted ? 'reacted' : ''}">
+                <button onclick="toggleReaction(${fb.id})" class="reaction-btn ${reacted ? 'reacted' : ''}" ${rCount > 0 ? `title="${reactionNamesTitle}"` : ''}>
                     <span>${reacted ? '❤️' : '🤍'}</span>
                     ${rCount > 0 ? `<span class="font-semibold text-slate-500">${rCount}</span>` : ''}
                 </button>
@@ -1409,26 +1492,13 @@ function renderAnalytics() {
     State.charts = {};
 
     // ── Chuẩn bị dữ liệu ──
-    let userMajors = [];
-    if (State.user && ['CNBM', 'GV'].includes(State.user.rawRole) && State.user.major) {
-        userMajors = State.user.major.split(',').map(m => m.trim()).filter(Boolean);
-    }
+    const stats = getUserGlobalStats();
+    const totalRoster = stats.total;
+    const realGreen = stats.green;
+    const yAll = stats.yellow;
+    const rAll = stats.red;
+    const studentsWithFeedback = stats.studentsWithFeedback;
 
-    const all = State.students; // SV đã có feedback
-    const studentsWithFeedback = all.length;
-    const gAll = all.filter(s => (s.status || 'green') === 'green').length;
-    const yAll = all.filter(s => s.status === 'yellow').length;
-    const rAll = all.filter(s => s.status === 'red').length;
-
-    let totalRoster = 0;
-    if (rosterCache && rosterCache.length > 0) {
-        rosterCache.forEach(s => {
-            if (!s.nganh) return;
-            const sMajors = s.nganh.split(',').map(m => m.trim()).filter(Boolean);
-            if (userMajors.length > 0 && !sMajors.some(m => userMajors.includes(m))) return;
-            totalRoster++;
-        });
-    }
     const studentsWithoutFeedback = Math.max(0, totalRoster - studentsWithFeedback);
     const coveragePct = totalRoster > 0 ? ((studentsWithFeedback / totalRoster) * 100).toFixed(1) : '0.0';
 
@@ -1438,7 +1508,6 @@ function renderAnalytics() {
     const kpiY = document.getElementById('kpiYellow');
     const kpiR = document.getElementById('kpiRed');
     
-    const realGreen = Math.max(0, totalRoster - yAll - rAll);
     const gPct = totalRoster > 0 ? ((realGreen / totalRoster) * 100).toFixed(1) : '0.0';
     const yPct = totalRoster > 0 ? ((yAll / totalRoster) * 100).toFixed(1) : '0.0';
     const rPct = totalRoster > 0 ? ((rAll / totalRoster) * 100).toFixed(1) : '0.0';
@@ -1820,8 +1889,27 @@ function getTargetStudentsForNotif() {
             const hasFeedback = (s.feedbacks && s.feedbacks.length > 0);
             if (!isRedOrYellow && !hasFeedback) return false;
 
+            // LOẠI BỎ THÔNG BÁO VỚI SV QUÁ 15 NGÀY KHÔNG CÓ CẬP NHẬT (CHỈ ÁP DỤNG VỚI GV/CNBM)
+            const latestTime = getLatestTime(s);
+            if (State.user && ['GV', 'CNBM'].includes(State.user.rawRole) && (now - latestTime > 15 * ONE_DAY_MS)) {
+                return false;
+            }
+
             // VỚI CTSV: KHÔNG CẦN CHECK 24H VÀ CÁC LOGIC ĐÃ ĐỌC TOÀN CỤC BÊN DƯỚI
             if (State.user && State.user.rawRole === 'CTSV') return true;
+
+            // KIỂM TRA UNREACTED CTSV FEEDBACK CHO GV/CNBM
+            if (State.user && ['GV', 'CNBM'].includes(State.user.rawRole)) {
+                if (s.feedbacks && s.feedbacks.length > 0) {
+                     const ctsvFbs = s.feedbacks.filter(f => f.role === 'CTSV' && !f.parent_id);
+                     if (ctsvFbs.length > 0) {
+                         const latestCtsvFb = ctsvFbs.sort((a,b) => new Date(b.created_at) - new Date(a.created_at))[0];
+                         const hasReacted = latestCtsvFb.reactions && latestCtsvFb.reactions.some(r => r.code === State.user.code);
+                         // Nếu feedback gốc mới nhất từ CTSV chưa được thả tim, BẮT BUỘC phải hiện thông báo
+                         if (!hasReacted) return true;
+                     }
+                }
+            }
 
             // ĐÃ ĐỌC (Toàn cục): Nếu user hiện tại đã thả tim vào feedback MỚI NHẤT 
             // hoặc chính họ là người viết feedback mới nhất, thì tắt noti cho user này.
@@ -1831,13 +1919,13 @@ function getTargetStudentsForNotif() {
                 const hasReacted = latestFb.reactions && latestFb.reactions.some(r => r.code === State.user.code);
                 const isAuthor = latestFb.author_code === State.user.code;
 
+                // Mọi role đều áp dụng 24h cho các comment thông thường (trừ CTSV và các comment CTSV chưa thả tim đã được return true ở trên)
                 if (isWithin24h && (hasReacted || isAuthor)) {
                     return false;
                 }
             }
 
             // Check xem thời gian cập nhật có nằm trong 24h qua không
-            const latestTime = getLatestTime(s);
             return (now - latestTime) <= ONE_DAY_MS;
         });
 
@@ -2000,6 +2088,21 @@ function openReportModal() {
     };
     document.getElementById('reportSubtitle').textContent = subtitleMap[role] || '';
 
+    const wrap = document.getElementById('cnbmOnlyMyClassWrapper');
+    if (role === 'CNBM') {
+        if (wrap) {
+            wrap.classList.remove('hidden');
+            wrap.classList.add('flex');
+        }
+        const cb = document.getElementById('cnbmOnlyMyClass');
+        if (cb) cb.checked = false;
+    } else {
+        if (wrap) {
+            wrap.classList.add('hidden');
+            wrap.classList.remove('flex');
+        }
+    }
+
     // Populate dropdown lớp tuỳ theo role:
     // – GV   : chỉ hiện lớp của chính GV (State.user.lop), tự động chọn sẵn
     // – Khác : hiện toàn bộ lớp từ DB.students
@@ -2048,12 +2151,13 @@ async function generateReport() {
 
     const role = State.user.rawRole;
     const classF = document.getElementById('reportClassFilter').value;
+    const isCnbmOnlyMine = role === 'CNBM' && document.getElementById('cnbmOnlyMyClass')?.checked;
 
     // Bước 1: Lọc feedback theo phân quyền từ Supabase
     // – Admin, CNBM: tất cả feedback
     // – CTSV, GV   : chỉ feedback do bản thân tạo
     let query = supabase.from('feedbacks').select('*').is('parent_id', null);
-    if (['CTSV', 'GV'].includes(role)) {
+    if (['CTSV', 'GV'].includes(role) || isCnbmOnlyMine) {
         query = query.eq('author_code', State.user.code);
     }
 
@@ -2074,7 +2178,7 @@ async function generateReport() {
         .filter(Boolean);
 
     // Bước 3a: Với GV — bắt buộc lọc chỉ hiển thị SV do mình dạy (có tên trong roster)
-    if (role === 'GV') {
+    if (role === 'GV' || isCnbmOnlyMine) {
         const ucode = State.user.code.toLowerCase();
         const uname = State.user.name.toLowerCase();
         rows = rows.filter(r => {
@@ -2113,7 +2217,7 @@ async function generateReport() {
 
     // Bước 4: Render header bảng
     // Mỗi <th> gắn onclick highlightCol(i) để bôi xanh cả cột
-    const cols = ['MSSV', 'Họ và tên sinh viên', 'Lớp / Mã môn', 'Giảng viên phụ trách', 'Người ghi nhận', 'Phản hồi gần nhất', 'Thời gian'];
+    const cols = ['MSSV', 'Họ và tên sinh viên', 'Lớp', 'Mã môn', 'Giảng viên phụ trách', 'Người ghi nhận', 'Phản hồi gần nhất', 'Thời gian'];
     document.getElementById('reportThead').innerHTML = `
         <tr>
             ${cols.map((c, i) => `
@@ -2134,7 +2238,19 @@ async function generateReport() {
     const statusEmoji = { green: '🟢', yellow: '🟡', red: '🔴' };
 
     document.getElementById('reportTbody').innerHTML = rows.map(({ student: s, feedback: f }) => {
-        const lopDisplay = `${s.lop || 'N/A'}${s.ma_mon ? ` (📚 ${s.ma_mon})` : ''}`;
+        let displayedLop = s.lop || 'N/A';
+        // Lọc lớp hiển thị theo GV/CNBM hoặc bộ lọc
+        if (classF !== 'all') {
+            displayedLop = classF;
+        } else if (role === 'GV' || isCnbmOnlyMine) {
+            if (State.user.lop) {
+                const userClasses = State.user.lop.split(',').map(c => c.trim());
+                const stuClasses = displayedLop.split(',').map(c => c.trim());
+                const intersection = stuClasses.filter(c => userClasses.includes(c));
+                if (intersection.length > 0) displayedLop = intersection.join(', ');
+            }
+        }
+
         const fbTime = new Date(f.created_at).toLocaleString('vi-VN',
             { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
         const authorLabel = f.author_name ? `${f.author_name} (${f.role})` : 'Ẩn danh';
@@ -2143,7 +2259,8 @@ async function generateReport() {
         return `<tr>
             <td class="font-mono text-xs text-slate-500 whitespace-nowrap">${s.mssv}</td>
             <td class="font-semibold text-slate-800 whitespace-nowrap">${s.ho_ten}</td>
-            <td class="text-xs text-slate-600 whitespace-nowrap">${lopDisplay}</td>
+            <td class="text-xs text-slate-600 whitespace-nowrap">${displayedLop}</td>
+            <td class="text-xs text-slate-600 whitespace-nowrap">${s.ma_mon || 'N/A'}</td>
             <td class="text-xs text-slate-600 whitespace-nowrap">${s.giang_vien || 'N/A'}</td>
             <td class="text-xs text-slate-600 whitespace-nowrap">${authorLabel}</td>
             <td class="text-sm text-slate-700" style="min-width:260px;max-width:400px">${f.content}</td>
