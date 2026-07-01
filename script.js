@@ -346,7 +346,15 @@ function getUserGlobalStats() {
     const finalTotal = Math.max(totalRoster, studentsWithFeedback);
     const gAll = Math.max(0, finalTotal - yAll - rAll);
 
-    return { total: finalTotal, green: gAll, yellow: yAll, red: rAll, studentsWithFeedback };
+    return { 
+        total: finalTotal, 
+        green: gAll, 
+        yellow: yAll, 
+        red: rAll, 
+        studentsWithFeedback,
+        accessibleStudents,
+        userMajors
+    };
 }
 
 function updateStats() {
@@ -1505,6 +1513,11 @@ function renderAnalytics() {
     const yAll = stats.yellow;
     const rAll = stats.red;
     const studentsWithFeedback = stats.studentsWithFeedback;
+    
+    // Cần cho các biểu đồ phân bổ trạng thái
+    const all = stats.accessibleStudents;
+    const userMajors = stats.userMajors;
+    const gAll = all.filter(s => (s.status || 'green') === 'green').length;
 
     const studentsWithoutFeedback = Math.max(0, totalRoster - studentsWithFeedback);
     const coveragePct = totalRoster > 0 ? ((studentsWithFeedback / totalRoster) * 100).toFixed(1) : '0.0';
@@ -1633,6 +1646,7 @@ function renderAnalytics() {
             ]
         },
         options: {
+            indexAxis: 'y',
             responsive: true, maintainAspectRatio: false,
             plugins: {
                 legend: { labels: { font: { family: 'Inter', size: 11 }, usePointStyle: true, pointStyleWidth: 10, padding: 16 } },
@@ -1648,8 +1662,8 @@ function renderAnalytics() {
                 }
             },
             scales: {
-                x: { stacked: true, grid: { display: false }, ticks: { font: { family: 'Inter', size: 11, weight: '600' } } },
-                y: { stacked: true, beginAtZero: true, ticks: { stepSize: 5, font: { family: 'Inter', size: 11 } }, grid: { color: '#f1f5f9' } }
+                x: { stacked: true, beginAtZero: true, ticks: { stepSize: 5, font: { family: 'Inter', size: 11 } }, grid: { color: '#f1f5f9' } },
+                y: { stacked: true, grid: { display: false }, ticks: { font: { family: 'Inter', size: 11, weight: '600' } } }
             }
         }
     });
